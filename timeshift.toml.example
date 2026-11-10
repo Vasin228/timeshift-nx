@@ -1,0 +1,14 @@
+# TimeShift ReXGlue Switch Configuration
+log_level = "info"
+switch_nintendo_layout = true
+audio_maxqframes = 16
+vulkan_async_skip_incomplete_frames = false
+async_shader_compilation = true
+vsync = false
+
+sa2_renut_snapshot_deltas = false
+sa2_renut_chain_reuse = false
+sa2_renut_colour_handover = false
+sa2_renut_clear_repeat = false
+sa2_renut_gamma_ramp = true
+renut_anisotropic_filtering = "16x"

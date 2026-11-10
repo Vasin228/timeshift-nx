@@ -1,0 +1,66 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "anchors": [
+    {
+      "function": "sub_8264ED40",
+      "pc": "0x8264ED6C",
+      "instruction": "lwz r10,0(r10)",
+      "device_register": "r31",
+      "bytes": "814a0000"
+    },
+    {
+      "function": "sub_8264ED40",
+      "pc": "0x8264EDA4",
+      "instruction": "lwz r10,0(r10)",
+      "device_register": "r31",
+      "bytes": "814a0000"
+    },
+    {
+      "function": "sub_8264ED40",
+      "pc": "0x8264EDE4",
+      "instruction": "lwz r10,0(r10)",
+      "device_register": "r31",
+      "bytes": "814a0000"
+    },
+    {
+      "function": "sub_82647390",
+      "pc": "0x826473A4",
+      "instruction": "lwz r10,0(r10)",
+      "device_register": "r4",
+      "bytes": "814a0000"
+    },
+    {
+      "function": "sub_82647528",
+      "pc": "0x82647598",
+      "instruction": "lwz r9,0(r11)",
+      "device_register": "r29",
+      "bytes": "812b0000"
+    },
+    {
+      "function": "sub_82647528",
+      "pc": "0x826475A4",
+      "instruction": "lwz r11,0(r11)",
+      "device_register": "r29",
+      "bytes": "816b0000"
+    }
+  ],
+  "private_app_files": [
+    {
+      "file": "generated/default/timeshift_recomp.153.cpp",
+      "sha256": "a041ed17d8af0bc790a8e3f83996e7e4f7b966c835512037ab02a59fcd993833",
+      "bytes": 1035670
+    },
+    {
+      "file": "generated/default/timeshift_recomp.78.cpp",
+      "sha256": "71e740a37c40408b68b873094856434e36f71fd2b8c43b4ae9c53a1d8b290893",
+      "bytes": 1035448
+    },
+    {
+      "file": "generated/default/timeshift_recomp.2.cpp",
+      "sha256": "a9bcc39976e3fae5610ea3e1351f3d794282a510d5115eff65fdfaf80761e6d4",
+      "bytes": 1044443
+    }
+  ],
+  "production_activation": false,
+  "limitation": "Six selected completion loads, not all fence readers; retained CBlocker/BlockOnFence CPU semantics"
+}

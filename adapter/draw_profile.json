@@ -1,0 +1,364 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "anchors": [
+    {
+      "function": "0x82650020",
+      "pc": "0x82650028",
+      "instruction": "stwu r1,-240(r1)",
+      "instruction_hex": "9421ff10",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650020",
+      "pc": "0x82650510",
+      "instruction": "lwz r11,324(r1)",
+      "instruction_hex": "81610144",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x82650558",
+      "instruction": "stwu r1,-176(r1)",
+      "instruction_hex": "9421ff50",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x82650560",
+      "instruction": "lwz r30,260(r1)",
+      "instruction_hex": "83c10104",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264C8E8",
+      "pc": "0x8264C8F8",
+      "instruction": "stwu r1,-384(r1)",
+      "instruction_hex": "9421fe80",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264C8E8",
+      "pc": "0x8264CC90",
+      "instruction": "lwz r6,476(r1)",
+      "instruction_hex": "80c101dc",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264C8E8",
+      "pc": "0x8264C8F8",
+      "instruction": "stwu r1,-384(r1)",
+      "instruction_hex": "9421fe80",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264C8E8",
+      "pc": "0x8264CC6C",
+      "instruction": "lwz r29,484(r1)",
+      "instruction_hex": "83a101e4",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x82650594",
+      "instruction": "bl 0x82650020",
+      "instruction_hex": "4bfffa8d",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x82650584",
+      "instruction": "neg r5,r29",
+      "instruction_hex": "7cbd00d0",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x826505A8",
+      "instruction": "add r4,r11,r24",
+      "instruction_hex": "7c8bc214",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650550",
+      "pc": "0x826505B0",
+      "instruction": "bl 0x828e1800",
+      "instruction_hex": "48291251",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650020",
+      "pc": "0x82650514",
+      "instruction": "stw r25,13432(r31)",
+      "instruction_hex": "933f3478",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650020",
+      "pc": "0x82650518",
+      "instruction": "stw r24,13436(r31)",
+      "instruction_hex": "931f347c",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82650020",
+      "pc": "0x82650520",
+      "instruction": "stw r17,13444(r31)",
+      "instruction_hex": "923f3484",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A828",
+      "instruction": "lwz r7,12432(r3)",
+      "instruction_hex": "80e33090",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A834",
+      "instruction": "lwz r11,12448(r3)",
+      "instruction_hex": "816330a0",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A838",
+      "instruction": "lbz r10,10940(r3)",
+      "instruction_hex": "89432abc",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A840",
+      "instruction": "lwz r11,36(r11)",
+      "instruction_hex": "816b0024",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A844",
+      "instruction": "rlwinm r9,r11,14,18,31",
+      "instruction_hex": "556974be",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A848",
+      "instruction": "rlwinm r11,r11,29,17,31",
+      "instruction_hex": "556bec7e",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A87C",
+      "instruction": "lwz r11,12720(r3)",
+      "instruction_hex": "816331b0",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A894",
+      "instruction": "lwz r10,12724(r3)",
+      "instruction_hex": "814331b4",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A8AC",
+      "instruction": "lwz r10,12728(r3)",
+      "instruction_hex": "814331b8",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A8C4",
+      "instruction": "lwz r10,12732(r3)",
+      "instruction_hex": "814331bc",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A8DC",
+      "instruction": "lwz r10,12736(r3)",
+      "instruction_hex": "814331c0",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A908",
+      "instruction": "lwz r11,13172(r3)",
+      "instruction_hex": "81633374",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264A810",
+      "pc": "0x8264A910",
+      "instruction": "lwz r11,13176(r3)",
+      "instruction_hex": "81633378",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264B8C0",
+      "pc": "0x8264B8F0",
+      "instruction": "stw r27,12740(r31)",
+      "instruction_hex": "937f31c4",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264B8C0",
+      "pc": "0x8264BAAC",
+      "instruction": "stw r29,13172(r31)",
+      "instruction_hex": "93bf3374",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264B8C0",
+      "pc": "0x8264BAB4",
+      "instruction": "stw r28,13176(r31)",
+      "instruction_hex": "939f3378",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264B8C0",
+      "pc": "0x8264BBE8",
+      "instruction": "stfs f31,13200(r31)",
+      "instruction_hex": "d3ff3390",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264B8C0",
+      "pc": "0x8264BBEC",
+      "instruction": "stw r24,13204(r31)",
+      "instruction_hex": "931f3394",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264BD58",
+      "pc": "0x8264BF90",
+      "instruction": "lis r11,-32155",
+      "instruction_hex": "3d608265",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264BD58",
+      "pc": "0x8264BF98",
+      "instruction": "addi r5,r11,9880",
+      "instruction_hex": "38ab2698",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x8264BD58",
+      "pc": "0x8264BFA0",
+      "instruction": "bl 0x8264f6b8",
+      "instruction_hex": "48003719",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82652890",
+      "pc": "0x82652908",
+      "instruction": "lis r11,-32155",
+      "instruction_hex": "3d608265",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82652890",
+      "pc": "0x82652910",
+      "instruction": "addi r6,r11,9880",
+      "instruction_hex": "38cb2698",
+      "runtime_verified": false
+    },
+    {
+      "function": "0x82652890",
+      "pc": "0x82652918",
+      "instruction": "bl 0x8264ee08",
+      "instruction_hex": "4bffc4f1",
+      "runtime_verified": false
+    }
+  ],
+  "caller_stack_arguments": [
+    {
+      "name": "inline_stack_argument",
+      "function": "0x82650020",
+      "frame_bytes": 240,
+      "framed_load_offset": 324,
+      "caller_sp_offset": 84
+    },
+    {
+      "name": "inline_stack_argument",
+      "function": "0x82650550",
+      "frame_bytes": 176,
+      "framed_load_offset": 260,
+      "caller_sp_offset": 84
+    },
+    {
+      "name": "resolve_stencil",
+      "function": "0x8264C8E8",
+      "frame_bytes": 384,
+      "framed_load_offset": 476,
+      "caller_sp_offset": 92
+    },
+    {
+      "name": "resolve_parameters",
+      "function": "0x8264C8E8",
+      "frame_bytes": 384,
+      "framed_load_offset": 484,
+      "caller_sp_offset": 100
+    }
+  ],
+  "dormant_compiled_hooks": [
+    {
+      "address": "0x826505F0",
+      "instruction_count": 278,
+      "guest_code_sha256": "32e8c9332d63475ab942245fa8e8809ea978af0277fc2b73728779e29ac74305",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x8264FFD8",
+      "instruction_count": 18,
+      "guest_code_sha256": "aeb5236432e7759e0ada8d3d590ab7ee17a8e06261ce7a46c09d31325c47ab5d",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x82650550",
+      "instruction_count": 40,
+      "guest_code_sha256": "4242d6a73dce124b3ae6831b87dc170d9acf7e2b16777503e27c4fab3b692478",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x8264FB38",
+      "instruction_count": 296,
+      "guest_code_sha256": "5b0a6aa24497eebf262e1785454a57220e27f1145c7bc6946f5365034f2b345d",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x82650020",
+      "instruction_count": 332,
+      "guest_code_sha256": "c10f643647aae03b05d2ba1eac58fea2cc1dcd92403e08c0c97dd1bd841d3135",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x8264A810",
+      "instruction_count": 73,
+      "guest_code_sha256": "4424b231cbf712911faf19290ce1316244f486ff2424173f3c9db790292d6586",
+      "installed_in_game": false,
+      "runtime_verified": false
+    },
+    {
+      "address": "0x8264C8E8",
+      "instruction_count": 913,
+      "guest_code_sha256": "59b53463a2b41b50b793480bb9fa96056c212a155c7e1dadfeb2beec3d0865b5",
+      "installed_in_game": false,
+      "runtime_verified": false
+    }
+  ],
+  "gpu_worker": "0x82652698",
+  "internal_segment_end": "0x82652890",
+  "production_activation": false,
+  "tiling_integrated": false,
+  "limitation": "Selected ABI/field/control-flow evidence; not full draw/command-buffer coverage or GPU execution"
+}

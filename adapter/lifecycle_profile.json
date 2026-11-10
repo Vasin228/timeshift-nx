@@ -1,0 +1,189 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "anchors": [
+    {
+      "function": "0x826478E0",
+      "pc": "0x826478EC",
+      "instruction": "mr r27,r8",
+      "bytes": "7d1b4378"
+    },
+    {
+      "function": "0x826478E0",
+      "pc": "0x826478F4",
+      "instruction": "mr r29,r4",
+      "bytes": "7c9d2378"
+    },
+    {
+      "function": "0x826478E0",
+      "pc": "0x826479A8",
+      "instruction": "stw r31,0(r27)",
+      "bytes": "93fb0000"
+    },
+    {
+      "function": "0x826478E0",
+      "pc": "0x8264790C",
+      "instruction": "bl 0x826474d8",
+      "bytes": "4bfffbcd"
+    },
+    {
+      "function": "0x82647600",
+      "pc": "0x82647614",
+      "instruction": "lwz r11,60(r31)",
+      "bytes": "817f003c"
+    },
+    {
+      "function": "0x82647600",
+      "pc": "0x82647618",
+      "instruction": "cmplwi cr6,r11,1",
+      "bytes": "2b0b0001"
+    },
+    {
+      "function": "0x82647600",
+      "pc": "0x82647620",
+      "instruction": "bl 0x826540c8",
+      "bytes": "4800caa9"
+    },
+    {
+      "function": "0x82647600",
+      "pc": "0x8264763C",
+      "instruction": "stw r3,60(r31)",
+      "bytes": "907f003c"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E704",
+      "instruction": "mr r6,r5",
+      "bytes": "7ca62b78"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E720",
+      "instruction": "lwz r3,13500(r31)",
+      "bytes": "807f34bc"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E7C0",
+      "instruction": "stb r11,10941(r31)",
+      "bytes": "997f2abd"
+    },
+    {
+      "function": "0x8264F3B8",
+      "pc": "0x8264F3CC",
+      "instruction": "mr r31,r3",
+      "bytes": "7c7f1b78"
+    },
+    {
+      "function": "0x8264F3B8",
+      "pc": "0x8264F448",
+      "instruction": "bl 0x8264f230",
+      "bytes": "4bfffde9"
+    },
+    {
+      "function": "0x8264F3B8",
+      "pc": "0x8264F498",
+      "instruction": "lwz r3,48(r31)",
+      "bytes": "807f0030"
+    },
+    {
+      "function": "0x8264F5D8",
+      "pc": "0x8264F5E8",
+      "instruction": "mr r29,r4",
+      "bytes": "7c9d2378"
+    },
+    {
+      "function": "0x8264F5D8",
+      "pc": "0x8264F5F0",
+      "instruction": "lwz r11,48(r31)",
+      "bytes": "817f0030"
+    },
+    {
+      "function": "0x8264F5D8",
+      "pc": "0x8264F5F4",
+      "instruction": "lwz r10,52(r31)",
+      "bytes": "815f0034"
+    },
+    {
+      "function": "0x8264F5D8",
+      "pc": "0x8264F604",
+      "instruction": "bl 0x8264f3b8",
+      "bytes": "4bfffdb5"
+    },
+    {
+      "function": "0x826474D8",
+      "pc": "0x826474FC",
+      "instruction": "mr r5,r30",
+      "bytes": "7fc5f378"
+    },
+    {
+      "function": "0x826474D8",
+      "pc": "0x82647500",
+      "instruction": "li r4,0",
+      "bytes": "38800000"
+    },
+    {
+      "function": "0x826474D8",
+      "pc": "0x82647508",
+      "instruction": "bl 0x828e27e0",
+      "bytes": "4829b2d9"
+    },
+    {
+      "function": "0x826540C8",
+      "pc": "0x826540D8",
+      "instruction": "lwz r11,48(r31)",
+      "bytes": "817f0030"
+    },
+    {
+      "function": "0x826540C8",
+      "pc": "0x826540E8",
+      "instruction": "lbz r11,10940(r31)",
+      "bytes": "897f2abc"
+    },
+    {
+      "function": "0x826540C8",
+      "pc": "0x82654268",
+      "instruction": "lwz r3,16712(r31)",
+      "bytes": "807f4148"
+    },
+    {
+      "function": "0x826540C8",
+      "pc": "0x8265427C",
+      "instruction": "lwz r3,21552(r31)",
+      "bytes": "807f5430"
+    }
+  ],
+  "dormant_hooks": [
+    {
+      "address": "0x826478E0",
+      "instructions": 53,
+      "sha256": "3e001106a55bf1c22f4b93652be16468618f131e629c0756d38282c737413c86",
+      "installed_in_game": false
+    },
+    {
+      "address": "0x82647600",
+      "instructions": 21,
+      "sha256": "904167aadb7000523b3113684151867c4af322b9c62426e6d2e09bf7d0f31fa9",
+      "installed_in_game": false
+    },
+    {
+      "address": "0x8264E6F0",
+      "instructions": 58,
+      "sha256": "fcca0d9e4dc7dac25c01c98c4747b47cfbe711d4cab88285060e5337c65a410a",
+      "installed_in_game": false
+    },
+    {
+      "address": "0x8264F3B8",
+      "instructions": 63,
+      "sha256": "0a8a173baa44ada08e22f8997ed508118bc49c9b875f381f426d37465c12f9a7",
+      "installed_in_game": false
+    },
+    {
+      "address": "0x8264F5D8",
+      "instructions": 26,
+      "sha256": "6642a3a47004d2025b3b9ee70cff09bc5afc1a7b0d2a2e06c13c4593ea1dccef",
+      "installed_in_game": false
+    }
+  ],
+  "production_activation": false,
+  "limitation": "Selected original ABI/fields; native registry/source routing still lacks full resource teardown, fence/wait/segment/draw/presentation integration"
+}
