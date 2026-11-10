@@ -1,0 +1,773 @@
+{
+  "backend": "renut_deko3d",
+  "enabled": false,
+  "device_layout_verified": false,
+  "renderer_reuse_permission_verified": false,
+  "upstream_revision": "32a81a83aafd83e25d3a3cccae34f567766402c6",
+  "xex_sha256": "0eb9b13de4b44b14f89907b91973209112bca8f229cf7b55e26cc5daa0841050",
+  "declared_libraries": [
+    {
+      "name": "D3D9",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "D3DX9",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XGRAPHC",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XAPILIB",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XAUD",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XBOXKRNL",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XONLINE",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XHV",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "XMP",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    },
+    {
+      "name": "LIBCMT",
+      "major": 2,
+      "minor": 0,
+      "build": 6274,
+      "flags_hex": "4000"
+    }
+  ],
+  "hooks": [
+    {
+      "role": "Direct3D_CreateDevice",
+      "address": "0x826478E0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 adapter, r4 device type, r5 reserved, r6 behavior flags, r7 presentation parameters, r8 output device",
+      "instruction_count": 53,
+      "guest_code_sha256": "3e001106a55bf1c22f4b93652be16468618f131e629c0756d38282c737413c86"
+    },
+    {
+      "role": "KickOff",
+      "address": "0x8264F3B8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device; returns ring cursor",
+      "instruction_count": 63,
+      "guest_code_sha256": "0a8a173baa44ada08e22f8997ed508118bc49c9b875f381f426d37465c12f9a7"
+    },
+    {
+      "role": "KickOffSegment",
+      "address": "0x8264F230",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device",
+      "instruction_count": 97,
+      "guest_code_sha256": "3b84543ea59e37739c98cc3173f715788dd8a1489112872d4f51c333bbc65822"
+    },
+    {
+      "role": "BeginRingBig",
+      "address": "0x8264F5D8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 dword count; returns ring cursor",
+      "instruction_count": 26,
+      "guest_code_sha256": "6642a3a47004d2025b3b9ee70cff09bc5afc1a7b0d2a2e06c13c4593ea1dccef"
+    },
+    {
+      "role": "RingBufferDeviceAllocate",
+      "address": "0x8264E4E8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 flags, r5 byte-size pointer, r6 alignment",
+      "instruction_count": 129,
+      "guest_code_sha256": "5f182cbf49bd7e538f94c35b188069acb3a2b9ccf749c73c3c0ba8ce7a6b4fe6"
+    },
+    {
+      "role": "AllocateInlineData",
+      "address": "0x8264E6F0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 dword count, r5 alignment",
+      "instruction_count": 58,
+      "guest_code_sha256": "fcca0d9e4dc7dac25c01c98c4747b47cfbe711d4cab88285060e5337c65a410a"
+    },
+    {
+      "role": "SetRingBufferParameters",
+      "address": null,
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": false,
+      "resolution": "Unmapped; do not substitute InitializeRingBuffer without proving public entry ABI"
+    },
+    {
+      "role": "BlockOnFence",
+      "address": "0x8264ED40",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 fence, r5 blocker type, r6 no-kick flag",
+      "instruction_count": 49,
+      "guest_code_sha256": "1dadf8ff8e7c2376360869a58d7538035198a525cd754c763ff9c771007ca215"
+    },
+    {
+      "role": "IsFencePending",
+      "address": "0x8264F4F0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 fence; uses VdGlobalDevice internally; no device argument",
+      "instruction_count": 30,
+      "guest_code_sha256": "6a5c2c0310c2d24817c3c5046c0ad3e6c13b6b03db8e26402810ca63566f969a"
+    },
+    {
+      "role": "InsertCallback",
+      "address": "0x8264F6B8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 type, r5 callback, r6 context",
+      "instruction_count": 21,
+      "guest_code_sha256": "1d5b59ada6dcb16e6021c9311aac307bd146f840d4a599371dbd7c31820c46cf"
+    },
+    {
+      "role": "SynchronizeToPresentationInterval",
+      "address": "0x8264AD00",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 immediate flag",
+      "instruction_count": 106,
+      "guest_code_sha256": "9f88b2d8ab046dd0a9e860455c02dcfd5391d54880a15e86e6d70c6be7f7f5ae"
+    },
+    {
+      "role": "Swap",
+      "address": "0x8264B1A8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 front texture, r5 presentation parameters",
+      "instruction_count": 357,
+      "guest_code_sha256": "52c5e3186e949c600815c38bf36452b713873871e973de42c1f696db1107be17"
+    },
+    {
+      "role": "DrawVertices",
+      "address": null,
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": false,
+      "resolution": "Bound nonindexed draw entry not identified; UP/BeginVertices and indexed paths found; audit all draw coverage before enabling"
+    },
+    {
+      "role": "DrawIndexedVertices",
+      "address": "0x826505F0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 primitive, r5 base vertex, r6 start index, r7 index count",
+      "instruction_count": 278,
+      "guest_code_sha256": "32e8c9332d63475ab942245fa8e8809ea978af0277fc2b73728779e29ac74305"
+    },
+    {
+      "role": "DrawVerticesUP",
+      "address": "0x8264FFD8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 primitive, r5 vertex count, r6 vertex data, r7 stride",
+      "instruction_count": 18,
+      "guest_code_sha256": "aeb5236432e7759e0ada8d3d590ab7ee17a8e06261ce7a46c09d31325c47ab5d"
+    },
+    {
+      "role": "BeginVertices",
+      "address": "0x8264FB38",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 primitive, r5 vertex count, r6 stride; returns writable vertex data",
+      "instruction_count": 296,
+      "guest_code_sha256": "5b0a6aa24497eebf262e1785454a57220e27f1145c7bc6946f5365034f2b345d"
+    },
+    {
+      "role": "ClearF",
+      "address": "0x8264A810",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 flags, r5 optional rectangle, r6 color vector, f1 depth, r8 stencil",
+      "instruction_count": 73,
+      "guest_code_sha256": "4424b231cbf712911faf19290ce1316244f486ff2424173f3c9db790292d6586"
+    },
+    {
+      "role": "Resolve",
+      "address": "0x8264C8E8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 flags, r5 source rect, r6 texture, r7 destination point, r8 level, r9 slice, r10 clear color; f1 depth; caller sp+92 stencil, sp+100 parameters",
+      "instruction_count": 913,
+      "guest_code_sha256": "59b53463a2b41b50b793480bb9fa96056c212a155c7e1dadfeb2beec3d0865b5"
+    },
+    {
+      "role": "XGRegisterVertexShader",
+      "address": "0x8263F7C8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 vertex shader object, r4 physical part",
+      "instruction_count": 62,
+      "guest_code_sha256": "a550df13e5580b4c5db83512314710ec8da2945f09ac30ca3a34dad78cd1d490"
+    },
+    {
+      "role": "XGRegisterPixelShader",
+      "address": null,
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": false,
+      "resolution": "No standalone registration call in the observed pixel-creation path; intercept D3DDevice_CreatePixelShader after original execution instead"
+    },
+    {
+      "role": "CreateVertexDeclaration",
+      "address": "0x8263FB98",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 elements; returns declaration object",
+      "instruction_count": 33,
+      "guest_code_sha256": "233a50bcdd78a285012355770ed5ea1dba05ddf789b2b40070461bbe325853a3"
+    },
+    {
+      "role": "D3DResource_Destroy",
+      "address": "0x8264D7C0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 resource; waits on type-specific fences then frees",
+      "instruction_count": 121,
+      "guest_code_sha256": "7b6dceb64856a2d9664d2f252e92240b098903488cfa1924d8c7a38b3230189d"
+    },
+    {
+      "role": "D3DDevice_CreatePixelShader",
+      "address": "0x82640FF0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 complete shader container; returns shader object; registration is inlined here",
+      "instruction_count": 68,
+      "guest_code_sha256": "47b291554d77d43488f4d1ca5a1f423468a37e887fa5f6f6688522276a8a1499"
+    },
+    {
+      "role": "NewRingSegment",
+      "address": "0x8264F0B8",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 dword request",
+      "instruction_count": 86,
+      "guest_code_sha256": "29ea002ea0b68fd615100b3119b2217acf5ead19323e822167180c3d3796cde5"
+    },
+    {
+      "role": "CBlocker_Check",
+      "address": "0x82647528",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 blocker; original traps after about 5000 ms without progress",
+      "instruction_count": 53,
+      "guest_code_sha256": "7d8b36a4af3696b6e6ca6e164c38e884f805ff42b0d0881e759f7fe507cf114e"
+    },
+    {
+      "role": "BeginTiling",
+      "address": "0x8264B8C0",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 flags, r5 tile count, r6 rectangles, r7 clear color; f1 depth, r9 stencil",
+      "instruction_count": 293,
+      "guest_code_sha256": "44410fd083ab9f32416cd96fce113ff4327665e49f49791bf1fc368e80a13bfd"
+    },
+    {
+      "role": "EndTiling",
+      "address": "0x8264BD58",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 resolve flags, r5 rectangles, r6 destination texture, r7 clear color; f1 depth, r9 stencil, r10 parameters",
+      "instruction_count": 304,
+      "guest_code_sha256": "9cf92f45dc048f3ff56c6b2c56cee5631d31fab8b8f688957bde2735901fc87c"
+    },
+    {
+      "role": "SetPredication",
+      "address": "0x8264B750",
+      "verified": false,
+      "runtime_verified": false,
+      "installed": false,
+      "static_semantics_reviewed": true,
+      "abi": "r3 device, r4 tile mask",
+      "instruction_count": 91,
+      "guest_code_sha256": "f367035ec6d579524faaebd3c74e6efb97a102cd2f75bec6fcfb4d532d151571"
+    }
+  ],
+  "schema_version": 2,
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "verification_scope": "Static code review and offline CPU fixture only; no installed hooks or renderer execution",
+  "device_fields": [
+    {
+      "name": "device_bytes",
+      "value": 22400,
+      "evidence_function": "0x826478E0",
+      "evidence_pc": "0x826478FC",
+      "instruction_hex": "38605780",
+      "runtime_verified": false
+    },
+    {
+      "name": "device_alignment",
+      "value": 128,
+      "evidence_function": "0x826478E0",
+      "evidence_pc": "0x826478F8",
+      "instruction_hex": "38800080",
+      "runtime_verified": false
+    },
+    {
+      "name": "ring",
+      "value": 48,
+      "evidence_function": "0x8264E4C0",
+      "evidence_pc": "0x8264E4CC",
+      "instruction_hex": "91630030",
+      "runtime_verified": false
+    },
+    {
+      "name": "ring_limit",
+      "value": 52,
+      "evidence_function": "0x8264E4C0",
+      "evidence_pc": "0x8264E4DC",
+      "instruction_hex": "91430034",
+      "runtime_verified": false
+    },
+    {
+      "name": "ring_guarantee",
+      "value": 56,
+      "evidence_function": "0x8264E4C0",
+      "evidence_pc": "0x8264E4E0",
+      "instruction_hex": "91630038",
+      "runtime_verified": false
+    },
+    {
+      "name": "fence_completion",
+      "value": 10896,
+      "evidence_function": "0x8264ED40",
+      "evidence_pc": "0x8264ED60",
+      "instruction_hex": "815f2a90",
+      "runtime_verified": false
+    },
+    {
+      "name": "presentation_scratch",
+      "value": 10900,
+      "evidence_function": "0x8264AD00",
+      "evidence_pc": "0x8264AD84",
+      "instruction_hex": "815f2a94",
+      "runtime_verified": false
+    },
+    {
+      "name": "fence_tag",
+      "value": 10908,
+      "evidence_function": "0x8264ED40",
+      "evidence_pc": "0x8264ED64",
+      "instruction_hex": "817f2a9c",
+      "runtime_verified": false
+    },
+    {
+      "name": "flags",
+      "value": 10940,
+      "evidence_function": "0x826478E0",
+      "evidence_pc": "0x82647958",
+      "instruction_hex": "997f2abc",
+      "runtime_verified": false
+    },
+    {
+      "name": "flags1",
+      "value": 10941,
+      "evidence_function": "0x8264E4C0",
+      "evidence_pc": "0x8264E4D0",
+      "instruction_hex": "99432abd",
+      "runtime_verified": false
+    },
+    {
+      "name": "flags2",
+      "value": 10942,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653EA0",
+      "instruction_hex": "997f2abe",
+      "runtime_verified": false
+    },
+    {
+      "name": "vertex_declaration",
+      "value": 11812,
+      "evidence_function": "0x8263FA90",
+      "evidence_pc": "0x8263FA90",
+      "instruction_hex": "90832e24",
+      "runtime_verified": false
+    },
+    {
+      "name": "index_buffer",
+      "value": 12428,
+      "evidence_function": "0x826505F0",
+      "evidence_pc": "0x82650830",
+      "instruction_hex": "82df308c",
+      "runtime_verified": false
+    },
+    {
+      "name": "render_targets",
+      "value": 12432,
+      "evidence_function": "0x8263D140",
+      "evidence_pc": "0x8263D14C",
+      "instruction_hex": "39640c24",
+      "runtime_verified": false
+    },
+    {
+      "name": "depth_stencil",
+      "value": 12448,
+      "evidence_function": "0x8263D4A8",
+      "evidence_pc": "0x8263D4C8",
+      "instruction_hex": "93df30a0",
+      "runtime_verified": false
+    },
+    {
+      "name": "stream_sources",
+      "value": 12452,
+      "evidence_function": "0x8263C958",
+      "evidence_pc": "0x8263C9C8",
+      "instruction_hex": "397d0c29",
+      "runtime_verified": false
+    },
+    {
+      "name": "stream_strides",
+      "value": 12520,
+      "evidence_function": "0x8264FB38",
+      "evidence_pc": "0x8264FB70",
+      "instruction_hex": "997f30e8",
+      "runtime_verified": false
+    },
+    {
+      "name": "textures",
+      "value": 12536,
+      "evidence_function": "0x82649548",
+      "evidence_pc": "0x82649554",
+      "instruction_hex": "39640c3e",
+      "runtime_verified": false
+    },
+    {
+      "name": "viewport",
+      "value": 12640,
+      "evidence_function": "0x8263CD90",
+      "evidence_pc": "0x8263CF1C",
+      "instruction_hex": "d39f3160",
+      "runtime_verified": false
+    },
+    {
+      "name": "scissor_rect",
+      "value": 12668,
+      "evidence_function": "0x8263C858",
+      "evidence_pc": "0x8263C8C0",
+      "instruction_hex": "9163317c",
+      "runtime_verified": false
+    },
+    {
+      "name": "pixel_shader",
+      "value": 12684,
+      "evidence_function": "0x8263F608",
+      "evidence_pc": "0x8263F68C",
+      "instruction_hex": "93be318c",
+      "runtime_verified": false
+    },
+    {
+      "name": "vertex_shader",
+      "value": 12688,
+      "evidence_function": "0x8263F8C0",
+      "evidence_pc": "0x8263F960",
+      "instruction_hex": "93be3190",
+      "runtime_verified": false
+    },
+    {
+      "name": "predication",
+      "value": 12700,
+      "evidence_function": "0x8264B750",
+      "evidence_pc": "0x8264B84C",
+      "instruction_hex": "911f319c",
+      "runtime_verified": false
+    },
+    {
+      "name": "tile_count",
+      "value": 12740,
+      "evidence_function": "0x8264B8C0",
+      "evidence_pc": "0x8264B8F0",
+      "instruction_hex": "937f31c4",
+      "runtime_verified": false
+    },
+    {
+      "name": "tile_rectangles",
+      "value": 12744,
+      "evidence_function": "0x8264B8C0",
+      "evidence_pc": "0x8264B90C",
+      "instruction_hex": "395f31cc",
+      "runtime_verified": false
+    },
+    {
+      "name": "inline_ring_end",
+      "value": 13428,
+      "evidence_function": "0x8264FB38",
+      "evidence_pc": "0x8264FFC4",
+      "instruction_hex": "917f3474",
+      "runtime_verified": false
+    },
+    {
+      "name": "command_buffer",
+      "value": 13500,
+      "evidence_function": "0x8264E6F0",
+      "evidence_pc": "0x8264E720",
+      "instruction_hex": "807f34bc",
+      "runtime_verified": false
+    },
+    {
+      "name": "presentation_parameters",
+      "value": 13528,
+      "evidence_function": "0x826539A0",
+      "evidence_pc": "0x82653B54",
+      "instruction_hex": "387d34d8",
+      "runtime_verified": false
+    },
+    {
+      "name": "presentation_interval",
+      "value": 13580,
+      "evidence_function": "0x8264AD00",
+      "evidence_pc": "0x8264ADB4",
+      "instruction_hex": "815f350c",
+      "runtime_verified": false
+    },
+    {
+      "name": "auto_depth",
+      "value": 14808,
+      "evidence_function": "0x826539A0",
+      "evidence_pc": "0x82653B4C",
+      "instruction_hex": "909d39d8",
+      "runtime_verified": false
+    },
+    {
+      "name": "auto_front",
+      "value": 14812,
+      "evidence_function": "0x826539A0",
+      "evidence_pc": "0x82653ADC",
+      "instruction_hex": "907d39dc",
+      "runtime_verified": false
+    },
+    {
+      "name": "auto_back",
+      "value": 14816,
+      "evidence_function": "0x826539A0",
+      "evidence_pc": "0x82653B10",
+      "instruction_hex": "90bd39e0",
+      "runtime_verified": false
+    },
+    {
+      "name": "gamma_ramp",
+      "value": 14988,
+      "evidence_function": "0x8263CB08",
+      "evidence_pc": "0x8263CB30",
+      "instruction_hex": "3bdf3a8c",
+      "runtime_verified": false
+    },
+    {
+      "name": "present_fence_tag",
+      "value": 14924,
+      "evidence_function": "0x8264B1A8",
+      "evidence_pc": "0x8264B710",
+      "instruction_hex": "93df3a4c",
+      "runtime_verified": false
+    },
+    {
+      "name": "swap_fence_tag",
+      "value": 10928,
+      "evidence_function": "0x8264F4B8",
+      "evidence_pc": "0x8264F4CC",
+      "instruction_hex": "93e32ab0",
+      "runtime_verified": false
+    },
+    {
+      "name": "critical_section0",
+      "value": 14928,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653E84",
+      "instruction_hex": "387f3a50",
+      "runtime_verified": false
+    },
+    {
+      "name": "critical_section1",
+      "value": 14956,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653E8C",
+      "instruction_hex": "387f3a6c",
+      "runtime_verified": false
+    },
+    {
+      "name": "swap_count",
+      "value": 16544,
+      "evidence_function": "0x8264B1A8",
+      "evidence_pc": "0x8264B1D4",
+      "instruction_hex": "917f40a0",
+      "runtime_verified": false
+    },
+    {
+      "name": "side_buffer",
+      "value": 16712,
+      "evidence_function": "0x82653DF8",
+      "evidence_pc": "0x82653E44",
+      "instruction_hex": "907f4148",
+      "runtime_verified": false
+    },
+    {
+      "name": "hardware_sentinel0",
+      "value": 21540,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653F28",
+      "instruction_hex": "917f5424",
+      "runtime_verified": false
+    },
+    {
+      "name": "hardware_sentinel1",
+      "value": 21544,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653F2C",
+      "instruction_hex": "917f5428",
+      "runtime_verified": false
+    },
+    {
+      "name": "performance_frequency",
+      "value": 21568,
+      "evidence_function": "0x82653E68",
+      "evidence_pc": "0x82653FE0",
+      "instruction_hex": "d01f5440",
+      "runtime_verified": false
+    },
+    {
+      "name": "behavior_flags",
+      "value": 22280,
+      "evidence_function": "0x826478E0",
+      "evidence_pc": "0x82647994",
+      "instruction_hex": "93df5708",
+      "runtime_verified": false
+    },
+    {
+      "name": "point_size_packet",
+      "value": 10596,
+      "evidence_function": "0x8263B318",
+      "evidence_pc": "0x8263B350",
+      "instruction_hex": "b1632964",
+      "runtime_verified": false
+    },
+    {
+      "name": "point_minmax_packet",
+      "value": 10600,
+      "evidence_function": "0x8263B3D0",
+      "evidence_pc": "0x8263B400",
+      "instruction_hex": "b1632968",
+      "runtime_verified": false
+    },
+    {
+      "name": "program_wrap0",
+      "value": 10540,
+      "evidence_function": "0x8263B428",
+      "evidence_pc": "0x8263B434",
+      "instruction_hex": "9163292c",
+      "runtime_verified": false
+    },
+    {
+      "name": "depth_control",
+      "value": 10548,
+      "evidence_function": "0x8263ACB0",
+      "evidence_pc": "0x8263ACB8",
+      "instruction_hex": "91632934",
+      "runtime_verified": false
+    }
+  ],
+  "unresolved_layout": [
+    "Full public device/resource layout agreement with upstream",
+    "All nonindexed/indexed-UP/tessellated draw coverage",
+    "Tiling hooks must preserve actual clear values and host event order",
+    "Shader Bind path and recorded-command-buffer usage",
+    "Presentation pacing using the proven presentation_interval field",
+    "Resource/shader container layout equivalence beyond reviewed fields"
+  ]
+}

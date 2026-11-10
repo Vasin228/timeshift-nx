@@ -1,0 +1,62 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "anchors": [
+    {
+      "name": "kVertexContainerOffset",
+      "value": 872,
+      "function": "0x8263F7C8",
+      "pc": "0x8263F7D8",
+      "instruction_hex": "38a00368",
+      "runtime_verified": false
+    },
+    {
+      "name": "kVertexPhysicalOffset",
+      "value": 32,
+      "function": "0x8263F7C8",
+      "pc": "0x8263F7F0",
+      "instruction_hex": "93df0020",
+      "runtime_verified": false
+    },
+    {
+      "name": "kPixelContainerOffset",
+      "value": 40,
+      "function": "0x82640FF0",
+      "pc": "0x82641070",
+      "instruction_hex": "387f0028",
+      "runtime_verified": false
+    },
+    {
+      "name": "kPixelPhysicalOffset",
+      "value": 24,
+      "function": "0x82640FF0",
+      "pc": "0x826410F0",
+      "instruction_hex": "93bf0018",
+      "runtime_verified": false
+    },
+    {
+      "name": "kVertexElementBytes",
+      "value": 12,
+      "function": "0x8263FB98",
+      "pc": "0x8263FBD4",
+      "instruction_hex": "1d6b000c",
+      "runtime_verified": false
+    },
+    {
+      "name": "declaration_elements",
+      "value": 52,
+      "function": "0x8263FAA8",
+      "pc": "0x8263FB60",
+      "instruction_hex": "395f0034",
+      "runtime_verified": false
+    }
+  ],
+  "compiled_hooks": [
+    "0x8263F7C8",
+    "0x82640FF0",
+    "0x8263FB98",
+    "0x8264D7C0"
+  ],
+  "installed_in_game": false,
+  "production_activation": false,
+  "limitation": "Selected shader/declaration fields; no full device/resource/command-buffer layout proof"
+}

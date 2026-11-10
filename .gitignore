@@ -1,0 +1,51 @@
+# Compiled binaries and libraries
+build/
+bin/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.nro
+*.elf
+*.nacp
+
+# Logs and runtime telemetry dumps
+*.log
+*.txt
+!CMakeLists.txt
+!compile_commands.json
+!indirect_promotions.txt
+!STUB_AUDIT_REPORT.md
+!PACKAGE_SHA256.txt
+*.bmp
+*.raw
+latest_logs*/
+logs_*/
+backup_logs/
+analysis/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# IDE / OS specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Game assets & user dumps (users must extract their own files)
+game/
+user/
+cache/
+shader_capture*/

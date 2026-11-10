@@ -1,0 +1,73 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "address": "0x8264F4F0",
+  "arguments": [
+    "fence:r3"
+  ],
+  "device_source": "VdGlobalDevice via import82000914",
+  "anchors": [
+    {
+      "pc": "0x8264F504",
+      "instruction": "mr r30,r3",
+      "bytes": "7c7e1b78"
+    },
+    {
+      "pc": "0x8264F508",
+      "instruction": "cmplwi cr6,r30,0",
+      "bytes": "2b1e0000"
+    },
+    {
+      "pc": "0x8264F510",
+      "instruction": "lis r11,-32256",
+      "bytes": "3d608200"
+    },
+    {
+      "pc": "0x8264F514",
+      "instruction": "lwz r11,2324(r11)",
+      "bytes": "816b0914"
+    },
+    {
+      "pc": "0x8264F518",
+      "instruction": "lwz r31,0(r11)",
+      "bytes": "83eb0000"
+    },
+    {
+      "pc": "0x8264F51C",
+      "instruction": "lwz r11,10908(r31)",
+      "bytes": "817f2a9c"
+    },
+    {
+      "pc": "0x8264F520",
+      "instruction": "cmplw cr6,r30,r11",
+      "bytes": "7f1e5840"
+    },
+    {
+      "pc": "0x8264F52C",
+      "instruction": "bl 0x8264f3b8",
+      "bytes": "4bfffe8d"
+    },
+    {
+      "pc": "0x8264F530",
+      "instruction": "lwz r10,10896(r31)",
+      "bytes": "815f2a90"
+    },
+    {
+      "pc": "0x8264F538",
+      "instruction": "subf r9,r30,r11",
+      "bytes": "7d3e5850"
+    },
+    {
+      "pc": "0x8264F540",
+      "instruction": "subf r11,r10,r11",
+      "bytes": "7d6a5850"
+    },
+    {
+      "pc": "0x8264F54C",
+      "instruction": "clrlwi r3,r11,31",
+      "bytes": "556307fe"
+    }
+  ],
+  "function_sha256": "6a5c2c0310c2d24817c3c5046c0ad3e6c13b6b03db8e26402810ca63566f969a",
+  "production_activation": false,
+  "limitation": "Selected static ABI and CPU reference; no GPU or complete fence/wait routing"
+}

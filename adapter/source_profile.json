@@ -1,0 +1,124 @@
+{
+  "image_sha256": "67a052c61260f856ff87b79d13d04aab86668e6653a2d88619f7d6d61f72d27f",
+  "anchors": [
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F9B4",
+      "instruction": "li r11,3",
+      "bytes": "39600003"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F9B8",
+      "instruction": "stw r11,10908(r31)",
+      "bytes": "917f2a9c"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F9C4",
+      "instruction": "addi r11,r11,-2",
+      "bytes": "396bfffe"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F9C8",
+      "instruction": "stw r11,0(r10)",
+      "bytes": "916a0000"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F9E0",
+      "instruction": "stw r11,4(r9)",
+      "bytes": "91690004"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F8A8",
+      "instruction": "stw r3,10896(r31)",
+      "bytes": "907f2a90"
+    },
+    {
+      "function": "0x8264F710",
+      "pc": "0x8264F8C0",
+      "instruction": "stw r3,10900(r31)",
+      "bytes": "907f2a94"
+    },
+    {
+      "function": "0x8264EB80",
+      "pc": "0x8264EBB8",
+      "instruction": "lwz r5,10908(r11)",
+      "bytes": "80ab2a9c"
+    },
+    {
+      "function": "0x8264EB80",
+      "pc": "0x8264EC50",
+      "instruction": "stw r5,0(r10)",
+      "bytes": "90aa0000"
+    },
+    {
+      "function": "0x8264EB80",
+      "pc": "0x8264EC5C",
+      "instruction": "addi r10,r5,2",
+      "bytes": "39450002"
+    },
+    {
+      "function": "0x8264EB80",
+      "pc": "0x8264EC60",
+      "instruction": "stw r10,10908(r11)",
+      "bytes": "914b2a9c"
+    },
+    {
+      "function": "0x8264EB80",
+      "pc": "0x8264EC30",
+      "instruction": "lwz r9,21516(r11)",
+      "bytes": "812b540c"
+    },
+    {
+      "function": "0x8264ED40",
+      "pc": "0x8264ED68",
+      "instruction": "subf r9,r30,r11",
+      "bytes": "7d3e5850"
+    },
+    {
+      "function": "0x8264ED40",
+      "pc": "0x8264ED70",
+      "instruction": "subf r11,r10,r11",
+      "bytes": "7d6a5850"
+    },
+    {
+      "function": "0x8264ED40",
+      "pc": "0x8264ED74",
+      "instruction": "cmplw cr6,r9,r11",
+      "bytes": "7f095840"
+    },
+    {
+      "function": "0x8264ED40",
+      "pc": "0x8264ED88",
+      "instruction": "lwz r11,13216(r31)",
+      "bytes": "817f33a0"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E720",
+      "instruction": "lwz r3,13500(r31)",
+      "bytes": "807f34bc"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E7BC",
+      "instruction": "ori r11,r11,32",
+      "bytes": "616b0020"
+    },
+    {
+      "function": "0x8264E6F0",
+      "pc": "0x8264E7C0",
+      "instruction": "stb r11,10941(r31)",
+      "bytes": "997f2abd"
+    }
+  ],
+  "initial_current_tag": 3,
+  "initial_completed_tag": 1,
+  "tag_increment": 2,
+  "production_activation": false,
+  "limitation": "Selected original fence/allocator semantics; no full ring/segment/kernel execution or live ownership integration"
+}
