@@ -129,6 +129,21 @@ struct VideoState {
   // Bumped each time a command list begins; bound state cached against an
   // older value has to be set again.
   uint64_t list_generation = 0;
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+  struct SubmitDraw {
+    uint64_t list;
+    uint64_t vertex_shader;
+    uint64_t pixel_shader;
+    const plume::RenderPipeline *pipeline;
+    uint32_t count;
+    uint32_t depth_control;
+    uint32_t color_mask;
+    bool indexed;
+  };
+  static constexpr uint32_t kSubmitHistory = 16;
+  SubmitDraw submit_history[kSubmitHistory]{};
+  uint64_t submit_draw_count = 0;
+#endif
 
   // GPU time for the FPS overlay: a timestamp pair around each command list a
   // slot submits in its frame (memexport flushes submit mid-frame), summed

@@ -4269,6 +4269,24 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       g_targets_reuse.targets = targets;
     }
   }
+#if defined(TIMESHIFT_RECOMP)
+  // On Xbox 360, fullscreen post-processing passes (DOF, bloom, blur) leave the 1280x720 depth
+  // surface pointer in kDeviceOffsetDepthStencil while disabling depth/stencil writes and tests
+  // (or setting zfunc = ALWAYS with z_write = false). Unbinding targets.depth when depth/stencil
+  // is a complete no-op prevents a read/write hazard on the depth texture during post-processing
+  // and avoids size mismatches on quarter/eighth-res post-FX render targets, while keeping depth
+  // bound for all 3D scene and indoor lightning/weather occlusion draws (which use zfunc != ALWAYS).
+  if (targets.color_count > 0 && targets.depth != nullptr) {
+    const u32 dc = u32(device.dev().m_ControlPacket.DepthControl);
+    const bool stencil_active = (dc & 1) != 0;
+    const bool depth_test_active = (dc & 2) != 0;
+    const bool depth_write_active = depth_test_active && ((dc & 4) != 0);
+    const u32 zfunc = (dc >> 4) & 7;
+    if (!stencil_active && (!depth_test_active || (!depth_write_active && zfunc == 7))) {
+      targets.depth = nullptr;
+    }
+  }
+#endif
   // banjo-nx (2026-10-20, NOT exact, banjo_renut_fur_shells = N > 1, the user's call): the fur family's meshes are drawn
   // once a shell, shell by shell (each shell draws every part of the body: RenderDoc of Ryujinx shows the same four
   // parts repeating); of each part's draws in a frame (the same shaders and index range) every Nth is drawn, the first
@@ -4892,6 +4910,12 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       targets.depth->stencil_used = true;  // banjo-nx (2026-10-19, banjo_deko3d_depth_handover)
   }
   Video::NoteDrawLocked();  // banjo-nx (2026-10-19, banjo_deko3d_kick_submit): the open list's draws
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+  s.submit_history[s.submit_draw_count++ % VideoState::kSubmitHistory] = {
+      s.list_generation, vs->hash, ps ? ps->hash : 0, pipeline,
+      geometry.indexed ? geometry.index_count : geometry.vertex_count,
+      key.depth_control, key.color_mask, geometry.indexed};
+#endif
   if (geometry.indexed) {
     SetIndexBuffer(cmd, geometry.index_view);
     // banjo-nx: instanced for a tessellation grid (banjo_gpu_tess_grid); 1 for every other indexed draw.

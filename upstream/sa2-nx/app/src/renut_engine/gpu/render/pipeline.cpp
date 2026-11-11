@@ -309,6 +309,8 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
     desc.depthEnabled = (dc & 2) != 0;
     desc.depthWriteEnabled = (dc & 4) != 0;
     const u32 zfunc = (dc >> 4) & 7;
+    if (desc.depthEnabled && !desc.depthWriteEnabled && zfunc == 7)
+      desc.depthEnabled = false;
     desc.depthFunction = ConvertCompareFunction(zfunc);
     desc.stencilEnabled = dc & 1;
     desc.stencilReference = key.stencil_ref_mask & 0xFF;

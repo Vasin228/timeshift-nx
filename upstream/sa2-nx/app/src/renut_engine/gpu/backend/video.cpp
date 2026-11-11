@@ -5,6 +5,7 @@
  */
 #include "renut_engine/gpu/backend/video.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <mutex>
 #include <deque>
@@ -40,6 +41,9 @@
 #include <rex/cvar.h>  // sa2-nx (2026-10-20): sa2_renut_double_buffer
 #if defined(PLUME_DEKO3D)
 #include <plume_deko3d.h>  // banjo-nx (2026-10-20, banjo_deko3d_latency_trim): fence copies
+#endif
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+#include <switch.h>
 #endif
 
 #include "host_shaders/depth_resolve_ms_ps.spirv.h"
@@ -85,6 +89,81 @@ REXCVAR_DEFINE_BOOL(sa2_renut_double_buffer, false, "SA2/Renderer",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace renut::gpu {
+
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+static thread_local const VideoState *g_submit_trace = nullptr;
+
+extern "C" Result __real_nvioctlChannel_SubmitGpfifo(u32 fd, nvioctl_gpfifo_entry *entries,
+                                                    u32 count, u32 flags, nvioctl_fence *fence);
+extern "C" Result __wrap_nvioctlChannel_SubmitGpfifo(u32 fd, nvioctl_gpfifo_entry *entries,
+                                                    u32 count, u32 flags, nvioctl_fence *fence) {
+  constexpr uint32_t kLegacyLimit = 512;
+  constexpr uint32_t kHardwareFormat = BIT(2);
+  constexpr uint32_t kIncrementWithValue = BIT(8);
+  // Apply the limit here because libnx has already selected the legacy ioctl.
+  // Ryujinx reports firmware 3.0.0 to the guest when no firmware is installed.
+  if (count <= kLegacyLimit || (flags & ~kIncrementWithValue) != kHardwareFormat)
+    return __real_nvioctlChannel_SubmitGpfifo(fd, entries, count, flags, fence);
+
+  const uint32_t increment = fence->value;
+  static std::atomic<uint32_t> logged{0};
+  const bool trace = logged.fetch_add(1, std::memory_order_relaxed) < 4;
+  for (uint32_t offset = 0; offset < count; offset += kLegacyLimit) {
+    const uint32_t batch = std::min(count - offset, kLegacyLimit);
+    // Announce the fence increment once. The queued GPU commands perform the
+    // actual syncpoint increments in their original order.
+    const uint32_t batch_flags = offset == 0 ? flags : kHardwareFormat;
+    nvioctl_fence batch_fence = offset == 0 ? *fence : nvioctl_fence{};
+    Result result;
+    do {
+      result = __real_nvioctlChannel_SubmitGpfifo(fd, entries + offset, batch, batch_flags, &batch_fence);
+      if (result != MAKERESULT(Module_LibnxNvidia, LibnxNvidiaError_Busy))
+        break;
+      svcSleepThread(100000000);
+    } while (true);
+    if (trace || R_FAILED(result)) {
+      RGPU_INFO("[gpu-submit] split SubmitGpfifo: fd={} offset={} batch={} total={} "
+                "flags=0x{:X} fence_incr={} rc=0x{:08X}",
+                fd, offset, batch, count, batch_flags, offset == 0 ? increment : 0, result);
+    }
+    if (R_FAILED(result))
+      return result;
+    *fence = batch_fence;
+  }
+  return 0;
+}
+
+extern "C" Result __real_nvGpuChannelKickoff(NvGpuChannel *channel);
+extern "C" Result __wrap_nvGpuChannelKickoff(NvGpuChannel *channel) {
+  const uint32_t entries = channel->num_entries;
+  const Result result = __real_nvGpuChannelKickoff(channel);
+  if (R_SUCCEEDED(result))
+    return result;
+  const uint32_t hos = hosversionGet();
+  const char *path = hosversionAtLeast(4, 0, 0) ? "KickoffPb" : "SubmitGpfifo";
+  RGPU_ERROR("[gpu-submit] kickoff failed rc=0x{:08X}, module={}, description={}, path={}, "
+             "hos=0x{:08X}, fd={}, entries={}, syncpoint={}, fence={}, fence_incr={}",
+             result, R_MODULE(result), R_DESCRIPTION(result), path, hos, channel->base.fd,
+             entries, channel->fence.id, channel->fence.value, channel->fence_incr);
+  const uint32_t first_entry = entries > 8 ? entries - 8 : 0;
+  for (uint32_t i = first_entry; i < entries; ++i) {
+    const auto &entry = channel->entries[i];
+    RGPU_ERROR("[gpu-submit] entry={} raw=0x{:016X}", i, entry.desc);
+  }
+  if (const auto *s = g_submit_trace) {
+    RGPU_ERROR("[gpu-submit] slot={} list={} draws={}", s->frame, s->list_generation, s->list_draws);
+    const uint64_t count = s->submit_draw_count;
+    const uint64_t start = count > VideoState::kSubmitHistory ? count - VideoState::kSubmitHistory : 0;
+    for (uint64_t i = start; i < count; ++i) {
+      const auto &d = s->submit_history[i % VideoState::kSubmitHistory];
+      RGPU_ERROR("[gpu-submit] draw={} list={} pipeline={} vs={:016X} ps={:016X} {}={} depth={:08X} color={:04X}",
+                 i, d.list, fmt::ptr(d.pipeline), d.vertex_shader, d.pixel_shader,
+                 d.indexed ? "indices" : "vertices", d.count, d.depth_control, d.color_mask);
+    }
+  }
+  return result;
+}
+#endif
 
 // banjo-nx (2026-10-19, CPU proposal 5): State() is inline (video.h): a load of this pointer, set by the first call.
 VideoState *g_state = nullptr;
@@ -801,7 +880,13 @@ void SubmitAndWaitLocked(VideoState &s) {
   const plume::RenderCommandList *lists[] = {s.pending_list ? s.pending_list : current, current};
   const uint32_t count = s.pending_list ? 2 : 1;
   s.pending_list = nullptr;
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+  g_submit_trace = &s;
+#endif
   s.queue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0, s.fences[cur].get());
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+  g_submit_trace = nullptr;
+#endif
   {
     render_thread::WaitScope wait;
     s.queue->waitForCommandFence(s.fences[cur].get());
@@ -836,9 +921,15 @@ void SubmitAndAdvance(VideoState &s, plume::RenderCommandSemaphore *wait,
     s.pending_list = nullptr;
     plume::RenderCommandSemaphore *waits[] = {wait};
     plume::RenderCommandSemaphore *signals[] = {signal};
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+    g_submit_trace = &s;
+#endif
     s.queue->executeCommandLists(lists, count, wait ? waits : nullptr, wait ? 1 : 0,
                                  signal ? signals : nullptr, signal ? 1 : 0,
                                  s.fences[cur].get());
+#if defined(TIMESHIFT_RECOMP) && defined(PLUME_DEKO3D)
+    g_submit_trace = nullptr;
+#endif
     s.submitted[cur] = true;
     // banjo-nx (2026-10-20, input latency): the guest Swap this frame ends, for the probe's "input -> GPU done".
     g_slot_swap[cur] = g_presenting_swap;

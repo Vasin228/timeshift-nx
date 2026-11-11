@@ -186,6 +186,10 @@ void RetireTarget(HostSurface &surface) {
 }
 
 plume::RenderSampleCounts SampleCount(u32 info_word) {
+#if defined(TIMESHIFT_RECOMP)
+  (void)info_word;
+  return plume::RenderSampleCount::COUNT_1;
+#else
   switch ((info_word >> 16) & 3) {
   case 1:
     return plume::RenderSampleCount::COUNT_2;
@@ -194,6 +198,7 @@ plume::RenderSampleCounts SampleCount(u32 info_word) {
   default:
     return plume::RenderSampleCount::COUNT_1;
   }
+#endif
 }
 
 // At least 'min_width' x 'min_height' (see SetTilingExtentLocked), at 'scale'.

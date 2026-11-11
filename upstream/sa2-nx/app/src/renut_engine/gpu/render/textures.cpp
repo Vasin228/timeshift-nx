@@ -1146,10 +1146,20 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
   TextureFetch fetch = TextureFetch::FromHeader(header->Format);
 #if defined(TIMESHIFT_RECOMP)
   // TimeShift uses dynamic streaming where header->Format updates legitimate BasePage & mips during gameplay.
-  // We trust the updated texture header unconditionally when it describes a valid texture,
-  // but protect GPU-written surfaces from stack scratch overrides.
+  // Protect all GPU-written / resolved surfaces (including alias headers not in g_textures) and reject
+  // overwritten stack temporaries whose format, size, or swizzle no longer match device_fetch.
   const HostTexture *existing = FindHostTextureLocked(texture_va);
-  if (!fetch.IsTexture() || (existing && existing->gpu_written && fetch.BasePage() != device_fetch.BasePage())) {
+  const bool device_is_gpu_target =
+      (existing && existing->gpu_written) ||
+      g_resolve_targets.contains(device_fetch.BasePage()) ||
+      g_depth_words.contains(device_fetch.BasePage());
+  const bool same_shape_and_swizzle =
+      fetch.IsTexture() &&
+      ((fetch.dword[1] & 0xFFFu) == (device_fetch.dword[1] & 0xFFFu)) &&
+      (fetch.dword[2] == device_fetch.dword[2]) &&
+      ((fetch.dword[3] & 0x0007FFFFu) == (device_fetch.dword[3] & 0x0007FFFFu)) &&
+      ((fetch.dword[5] & 0x600u) == (device_fetch.dword[5] & 0x600u));
+  if (!same_shape_and_swizzle || device_is_gpu_target) {
     fetch = device_fetch;
   }
 #else

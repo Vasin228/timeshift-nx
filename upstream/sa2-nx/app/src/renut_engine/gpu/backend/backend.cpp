@@ -21,6 +21,12 @@
 #include <plume_deko3d.h>  // banjo-nx (2026-10-17): the deko3d back end
 #include "renut_engine/gpu/banjo_renut_deko3d.h"
 #endif
+#if defined(__SWITCH__)
+#include <malloc.h>
+#include <unistd.h>
+extern "C" char *fake_heap_start;
+extern "C" char *fake_heap_end;
+#endif
 
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/banjo_renut_record.h"  // banjo-nx (package 28b)
@@ -397,6 +403,16 @@ GpuMemoryUsage QueryGpuMemory(plume::RenderDevice *device) {
     const plume::Deko3DStats &st = plume::GetDeko3DStats();
     usage.local_used = st.imageBytes + st.bufferBytes + st.codeBytes + st.commandBytes;
     usage.local_budget = 0;
+#if defined(__SWITCH__)
+    const struct mallinfo mi = mallinfo();
+    char *brk = static_cast<char *>(sbrk(0));
+    const uint64_t heap_total =
+        fake_heap_end > fake_heap_start ? uint64_t(fake_heap_end - fake_heap_start) : 0;
+    const uint64_t heap_free =
+        uint64_t(uint32_t(mi.fordblks)) + (fake_heap_end > brk ? uint64_t(fake_heap_end - brk) : 0);
+    usage.shared_budget = heap_total;
+    usage.shared_used = heap_total > heap_free ? heap_total - heap_free : 0;
+#endif
     usage.valid = true;
     return usage;
   }

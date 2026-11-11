@@ -6,6 +6,7 @@
 #include "render_drop_telemetry.h"
 
 #include "renut_engine/gpu/backend/video.h"
+#include "renut_engine/gpu/backend/memory_report.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/render/textures.h"
@@ -160,6 +161,7 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
         std::lock_guard lock(State().mutex);
         ::renut::gpu::SyncPipelineListLocked();
       }
+      ::renut::gpu::MaybeReportMemory();
 
       // Advance presentation retirement counter (offset 16552) in guest device
       if (auto* dev = GuestPtr<uint8_t>(device_va)) {
