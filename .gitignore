@@ -49,3 +49,7 @@ game/
 user/
 cache/
 shader_capture*/
+
+# Local launch scripts
+run_ryujinx.bat
+

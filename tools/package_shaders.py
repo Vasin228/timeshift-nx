@@ -3,17 +3,25 @@
 The pinned consumer explicitly supports dictionary-free zstd frames. Every
 entry is decoded and byte-compared before the package is written atomically.
 """
-from pathlib import Path
+import argparse
 import ctypes as c
 import ctypes.util
 import hashlib
 import json
 import re
 import struct
+from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-report_path = ROOT/'analysis/deko-combined/report.json' if (ROOT/'analysis/deko-combined/report.json').exists() else ROOT/'analysis/deko-all/report.json'
-glsl_dir = ROOT/'analysis/deko-combined/glsl' if (ROOT/'analysis/deko-combined/glsl').exists() else ROOT/'analysis/deko-all/glsl'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--glsl', type=Path)
+parser.add_argument('--report', type=Path)
+parser.add_argument('--out', type=Path, default=ROOT/'build/renut-switch')
+args = parser.parse_args()
+combined = ROOT/'analysis/deko-combined'
+original = ROOT/'analysis/deko-all'
+report_path = args.report or (combined/'report.json' if (combined/'report.json').exists() else original/'report.json')
+glsl_dir = args.glsl or (combined/'glsl' if (combined/'glsl').exists() else original/'glsl')
 report=json.loads(report_path.read_text())
 if not report['success'] or report['passed'] != report['inputs']:
     raise ValueError('Complete native compiler validation is required first')
@@ -62,7 +70,7 @@ table_offset=32;data_offset=table_offset+56*len(entries)
 package=bytearray(struct.pack('<4s7I',b'BDKG',1,len(entries),0,table_offset,data_offset,0,0))
 for entry in entries:package+=struct.pack('<Q12I',*entry)
 package+=payload
-out=ROOT/'build/renut-switch';out.mkdir(parents=True,exist_ok=True)
+out=args.out.resolve();out.mkdir(parents=True,exist_ok=True)
 path=out/'deko3d_glsl.bin'
 temporary=path.with_suffix('.bin.tmp');temporary.write_bytes(package);temporary.replace(path)
 # A separate Switch object can embed this verified package without changing the old app.
@@ -81,8 +89,9 @@ extern const size_t g_deko3dGlslPackageSize = @SIZE@;
 (out/'deko3d_glsl_switch.cpp').write_text(cpp)
 summary=dict(success=True,format='BDKG version 1',entries=len(entries),dictionary_bytes=0,zstd_version=version(),
              raw_glsl_bytes=raw_bytes,package_bytes=len(package),sha256=hashlib.sha256(package).hexdigest(),
-             all_entries_round_trip_verified=True,compression_level=3,source_native_report='analysis/deko-all/report.json',
+             all_entries_round_trip_verified=True,compression_level=3,source_native_report=str(report_path),
              limitation='Shader data package only; no NRO or renderer linked')
-(ROOT/'analysis/shader-package.json').write_text(json.dumps(summary,indent=2)+'\n')
+summary_path = ROOT/'analysis/shader-package.json' if out == ROOT/'build/renut-switch' else out/'shader-package.json'
+summary_path.write_text(json.dumps(summary,indent=2)+'\n')
 print('Package:',len(entries),'entries;',raw_bytes,'raw bytes ->',len(package),'bytes; all entries round-trip verified')
 print('SHA256:',summary['sha256'])

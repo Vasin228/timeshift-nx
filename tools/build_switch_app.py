@@ -214,6 +214,8 @@ def link_candidate(objects):
         '-fPIE', f'-specs={DEVKITPRO}/libnx/switch.specs',
         f'-Wl,-Map,{map_path}',
         '-Wl,--gc-sections',
+        '-Wl,--wrap=nvGpuChannelKickoff',
+        '-Wl,--wrap=nvioctlChannel_SubmitGpfifo',
         *map(str, objects),
         '-Wl,--start-group',
         str(BUILD_CORE / 'plume/libplume.a'),

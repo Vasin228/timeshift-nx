@@ -30,8 +30,42 @@ extern "C" {
   // Title override application budget (gives ~3.1 GB usable process RAM)
   u32 __nx_applet_type = AppletType_Application;
 
-  // Newlib heap size limit: 1024 MB
-  u64 __nx_heap_size = 1792ull * 1024ull * 1024ull;
+  // Fallback newlib heap size limit if svcGetInfo fails
+  size_t __nx_heap_size = 2432ull * 1024ull * 1024ull;
+
+  // Claim all available process memory for the newlib heap when launched directly
+  // (e.g. in Ryujinx without hbloader's envHasHeapOverride).
+  void __libnx_initheap(void) {
+    void* addr = nullptr;
+    size_t size = 0;
+    if (envHasHeapOverride()) {
+      addr = envGetHeapOverrideAddr();
+      size = envGetHeapOverrideSize();
+    } else {
+      u64 available = 0, used = 0;
+      svcGetInfo(&available, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+      svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+      if (available > used + 0x200000) {
+        size = (available - used - 0x200000) & ~size_t(0x1FFFFF);
+      }
+      if (size < __nx_heap_size) {
+        size = __nx_heap_size;
+      }
+      Result rc = svcSetHeapSize(&addr, size);
+      if (R_FAILED(rc) && size != __nx_heap_size) {
+        size = __nx_heap_size;
+        rc = svcSetHeapSize(&addr, size);
+      }
+      if (R_FAILED(rc)) {
+        diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_HeapAllocFailed));
+      }
+    }
+    __nx_heap_size = size;
+    extern char* fake_heap_start;
+    extern char* fake_heap_end;
+    fake_heap_start = static_cast<char*>(addr);
+    fake_heap_end = static_cast<char*>(addr) + size;
+  }
 }
 
 namespace rex::ui {

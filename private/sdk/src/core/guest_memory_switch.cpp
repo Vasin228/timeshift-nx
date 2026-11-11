@@ -41,6 +41,7 @@ size_t g_size = 0;
 VirtmemReservation* g_reservation = nullptr;
 std::vector<View> g_views;
 std::map<size_t, Chunk> g_chunks;  // key: granule index (offset / kGranule)
+std::vector<void*> g_free_backings;
 size_t g_committed = 0;
 
 constexpr size_t kPage = 0x1000;
@@ -185,6 +186,10 @@ void Shutdown() {
     free(chunk.backing);
   }
   g_chunks.clear();
+  for (void* backing : g_free_backings) {
+    free(backing);
+  }
+  g_free_backings.clear();
   g_views.clear();
   if (g_reservation) {
     virtmemLock();
@@ -249,15 +254,22 @@ bool Commit(size_t offset, size_t length, uint32_t access) {
       }
       continue;
     }
-    void* backing = memalign(kGranule, kGranule);
+    void* backing = nullptr;
+    if (!g_free_backings.empty()) {
+      backing = g_free_backings.back();
+      g_free_backings.pop_back();
+    } else {
+      backing = memalign(kPage, kGranule);
+    }
     if (!backing) {
-      REXLOG_ERROR("Commit: memalign failed for granule {}", granule, g_committed / (1024 * 1024));
+      REXLOG_ERROR("Commit: memalign failed for granule {} (committed={} MB)", granule,
+                   g_committed / (1024 * 1024));
       return false;
     }
     memset(backing, 0, kGranule);
     uint8_t* alias = MakeCodeAlias(backing, kGranule);
     if (!alias) {
-      free(backing);
+      g_free_backings.push_back(backing);
       return false;
     }
     Chunk chunk{backing, alias, access};
@@ -274,8 +286,8 @@ bool Commit(size_t offset, size_t length, uint32_t access) {
 
 bool Decommit(size_t offset, size_t length) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  const size_t first = offset / kGranule;
-  const size_t last = (offset + length + kGranule - 1) / kGranule;
+  const size_t first = (offset + kGranule - 1) / kGranule;
+  const size_t last = (offset + length) / kGranule;
   for (size_t granule = first; granule < last; ++granule) {
     auto it = g_chunks.find(granule);
     if (it == g_chunks.end()) {
@@ -288,7 +300,7 @@ bool Decommit(size_t offset, size_t length) {
     svcUnmapProcessCodeMemory(GetProcHandle(),
                               reinterpret_cast<u64>(chunk.alias),
                               reinterpret_cast<u64>(chunk.backing), kGranule);
-    free(chunk.backing);
+    g_free_backings.push_back(chunk.backing);
     g_chunks.erase(it);
     g_committed -= kGranule;
   }

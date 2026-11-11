@@ -36,7 +36,9 @@ struct PSOutput
 
 uint EncodeUnorm24(float depth)
 {
-    return uint(saturate(depth) * 16777215.0 + 0.5);
+    // Adding 0.5 in float32 rounds 0xFFFFFF up to 0x1000000 at depth 1.0.
+    // That extra bit would be lost when the depth is packed above stencil.
+    return uint(round(saturate(depth) * 16777215.0));
 }
 
 // 20e4: a 4-bit exponent (bias 15) above a 20-bit mantissa, covering [0, 2).
