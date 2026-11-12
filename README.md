@@ -1,133 +1,150 @@
-[Русский](README.md) | [English](README_EN.md)
+[English](README.md) | [Русский](README_RU.md)
 
 # timeshift-nx
 
-Порт игры **TimeShift** (версия Xbox 360) на **Nintendo Switch** на базе статической рекомпиляции и нативного графического API `deko3d`.
+**TimeShift** (Xbox 360 version) native port for **Nintendo Switch** using static recompilation and the native `deko3d` graphics API.
 
-Выкладываю проект как есть.
+Releasing the project as-is.
 
-Сам я не программист — весь этот порт я делал с помощью нейросетей. В итоге удалось довести игру до рабочего состояния на реальной консоли: она собирается в один файл `.nro`, запускается без эмуляторов, ролики играют, меню работает, уровни загружаются, управление, физика и механики со временем функционируют. Но игра сейчас идёт не в 30 кадров, а где-то в 10–15 FPS.
+I am not a professional programmer - I built this port with the help of AI tools. The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. However, performance currently hovers around 10-15 FPS on retail hardware (optimization needed).
 
-В конце мы упёрлись в низкоуровневые баги графики и звука. У меня нет доступа к передовым нейросетям, а работать над таким проектом с Flash версией Gemini — это сплошная боль, поэтому сил и времени продолжать у меня больше нет.
-
-Если вы разбираетесь в низкоуровневой графике (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) или звуке и можете доделать проект — берите исходники и допиливайте. Свои исправления и доработки присылайте через запросы на слияние (Pull Request на GitHub): я сам не программист, но готовые доработки с радостью приму и нажму слияние, чтобы игра развивалась.
+If you have experience with low-level Switch development (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) or Switch audio and would like to help improve the port or optimize performance, you are welcome to contribute! Send your improvements via Pull Requests: working PRs will be gladly reviewed and merged so the port continues to evolve.
 
 ---
 
-## Что сейчас работает
+## What Works Right Now
 
-- **Статическая рекомпиляция:** Код Xbox 360 скомпилирован напрямую под 64-битный ARM (Horizon OS).
-- **Нативный рендерер:** Работает через нативный API Switch `deko3d` (прямой доступ к GPU Tegra X1).
-- **Вступительные ролики:** Bink Video работают без проблем со звуком и картинкой.
-- **Интерфейс и меню:** Главное меню, экран настроек, сохранение профиля, пауза — всё работает.
-- **Геймплей:** Уровни загружаются (проверен уровень `city_part01`), игра не вылетает.
-- **Управление и физика:** Полная поддержка кнопок Switch и стиков, прыжки, стрельба, ragdoll, физика Havok, AI врагов.
-- **Способности костюма:** Замедление, остановка и перемотка времени работают как в оригинале.
-- **Фреймрейт:** Сейчас выдает около 10–15 FPS на реальной консоли (требуется оптимизация).
-
----
-
-## Что сломано (оставшиеся баги)
-
-Если кто-то возьмется доделывать, вот 4 главных проблемы:
-
-### 1. Мыло на весь экран (Fullscreen Blur / DOF)
-* **Симптом:** На экран постоянно наложен сильный эффект размытия (Depth of Field), словно вся картинка не в фокусе (даже оружие в руках и стены в упор).
-* **Техническая суть:** Шейдер постобработки DOF читает буфер глубины EDRAM (`draw.cpp` / `renut_tuning_shims.cpp`). Если значения глубины считываются некорректно или возвращают 1.0 (far plane), шейдер думает, что всё находится на бесконечности, и врубает максимальный радиус размытия на весь экран.
-* **Где копать:** `adapter/renut_tuning_shims.cpp`, `upstream/sa2-nx/app/src/renut_engine/gpu/render/draw.cpp` (`ResolveDepth`), `upstream/sa2-nx/app/src/renut_engine/gpu/render/surfaces.cpp`.
-
-### 2. Мыльные текстуры вблизи (Mipmap Clamping / LOD)
-* **Симптом:** Текстуры стен, ящиков и персонажей вблизи остаются в низком разрешении, хотя в ассетах есть HD-текстуры.
-* **Техническая суть:** Движок Saber3D стримит текстуры с тайлингом XGraphics. У многих текстур в заголовках `max_mip_level == 0` или `fetch.MipPage() == 0`, из-за чего в `textures.cpp` / `texture_layout.cpp` рендерер срезает мип-уровни до 1, либо не подгружает хвосты мипмапов из `BasePage`.
-* **Где копать:** `upstream/sa2-nx/app/src/renut_engine/gpu/render/textures.cpp` (`BindTextureLocked`, `FillTextures`), `upstream/sa2-nx/app/src/renut_engine/gpu/render/texture_layout.cpp` (`GetTextureLevelLayout`), `adapter/tiling_hooks.cpp`.
-
-### 3. Молнии и гроза просвечивают сквозь стены в комнатах
-* **Симптом:** На уровне `city_part01` во время грозы вспышки молний и объемный свет погоды освещают закрытые внутренние помещения сквозь потолок и стены.
-* **Техническая суть:** Проходы отрисовки погоды используют `zfunc == 7`. В `pipeline.cpp` отключался тест глубины (`desc.depthEnabled = false`), либо буфер глубины интерьера теряется при смене формата EDRAM.
-* **Где копать:** `upstream/sa2-nx/app/src/renut_engine/gpu/render/pipeline.cpp`, `adapter/draw_hooks.cpp`.
-
-### 4. Заикания звука при взрывах и звуковых всплесках
-* **Симптом:** В спокойных сценах музыка и звуки играют чисто. Но при серии гранатных взрывов и выстрелов звук начинает трещать или подвешивать поток.
-* **Техническая суть:** Декодер XMA2 (`private/sdk/src/audio/xma_decoder.cpp`). Когда одновременно стартует 8–16 звуков, они начинают декодироваться синхронно в потоке `AudioWorker`, вылетая за дедлайн кадра (5.33 мс), из-за чего аппаратная очередь звука Switch опустошается. Нужно разгрузить декодирование в отдельный рабочий поток на свободное ядро.
-* **Где копать:** `private/sdk/src/audio/xma_decoder.cpp`, `private/sdk/src/audio/audio_system.cpp`.
+- **Static Recompilation:** Original Xbox 360 guest code compiled directly to 64-bit ARM (AArch64) for Horizon OS.
+- **Native Renderer:** Runs via Nintendo Switch native `deko3d` API (direct hardware access to Tegra X1 GPU).
+- **Save System & Checkpoints:** Fully implemented and working! Profile saves, new game autosaves, and in-game checkpoints are created and loaded properly on Horizon OS SD card storage (`sdmc:/switch/timeshift/user/`).
+- **Intro Cutscenes:** Bink Video playback works without audio/video glitches.
+- **UI & Menus:** Main menu, options, profile save/load, pause screen are all working.
+- **In-Game Gameplay:** Levels load and play (tested on `city_part01`) without crashes.
+- **Controls & Input:** Full support for Joy-Cons and Pro Controller (simultaneous dual-input for handheld and docked play).
+- **Suit Abilities:** Slow time, time stop, and time rewind affect the world and physics correctly.
+- **Weather & Storm Occlusion:** Atmospheric lightning flashes and volume light properly occluded inside rooms (fixed by Oleksa126).
+- **Auto-Sleep Inhibition:** Screen dimming and auto-sleep are disabled during gameplay.
+- **Memory Management:** Up to 2.4 GB dynamic process heap with backing memory granule recycling.
+- **Performance:** Currently runs at ~10-15 FPS on retail Switch hardware (optimization needed).
 
 ---
 
-## Структура папок
+## Known Issues (What Needs Fixing)
+
+If anyone decides to pick this up, here are the main remaining areas that need attention:
+
+### 1. Performance / Framerate Optimization (~10-15 FPS)
+* **Symptom:** The game runs at approximately 10-15 FPS during gameplay on physical Switch hardware.
+* **Technical details:** Needs command list batching, reducing redundant pipeline switches, optimizing vertex/index buffer uploads, and profiling Tegra X1 GPU bottlenecks.
+
+### 2. Audio Stuttering During Combat and Explosions
+* **Symptom:** Ambient music, footsteps, and quiet scenes sound clean. However, during heavy combat with grenade explosions and rapid gunfire, sound starts stuttering or causing frame hitches.
+* **Technical details:** XMA2 decoder (`private/sdk/src/audio/xma_decoder.cpp`). When multiple sound channels trigger simultaneously, the engine attempts to decode them synchronously inside the `AudioWorker` thread, exceeding the frame deadline. Needs asynchronous offloading to a worker thread on an idle core (Core 0 or Core 3).
+* **Relevant files:** `private/sdk/src/audio/xma_decoder.cpp`, `private/sdk/src/audio/audio_system.cpp`.
+
+### 3. Textures Stuck at Low LOD / Mipmap Levels
+* **Symptom:** Certain world and object textures (such as environment walls and crates) appear blurry or low-resolution up-close, displaying lower LOD/mip levels.
+* **Technical details:** Saber3D dynamic texture streaming packs mipmaps using Xbox 360 XGraphics tiling. Some textures need proper mip level chain resolution and contiguous mip page mapping so the engine streams full-resolution textures instead of low-detail LODs.
+* **Relevant files:** `upstream/sa2-nx/app/src/renut_engine/gpu/render/textures.cpp`, `upstream/sa2-nx/app/src/renut_engine/gpu/render/texture_layout.cpp`.
+
+---
+
+## Directory Structure
 
 ```
 timeshift-nx/
-├── adapter/              # C++ слой адаптера к рендереру deko3d
-│   ├── timeshift_app.cpp          # Главный цикл приложения и инициализация
-│   ├── renut_tuning_shims.cpp     # Настройки глубины, ZCull, форматов EDRAM
-│   ├── draw_hooks.cpp             # Перехват проходов отрисовки
-│   └── tiling_hooks.cpp           # Хуки тайлинга текстур XGraphics
-├── upstream/sa2-nx/      # Движок renut_engine (бэкенд deko3d, транслятор шейдеров)
-├── private/              # SDK (звук, память, потоки) и сгенерированный код рекомпиляции
-│   ├── app/generated/             # timeshift_recomp.*.cpp
-│   └── sdk/                       # rexglue audio, kernel, memory
-├── tools/                # Скрипты сборки и деплоя
-│   ├── build_switch_app.py        # Сборка timeshift.nro
-│   ├── prepare_switch_cache.py    # Подготовка файлов и кэша
-│   └── deploy_candidate.py        # Заливка на Switch по FTP
-├── MODLOG.md             # Лог этапов разработки (части 1–241)
-├── deko3d_shaders_f0.bin # Собранный кэш шейдеров deko3d (4,283 шейдера)
-└── timeshift.toml        # Конфиг для запуска игры на Switch
+|-- adapter/              # C++ adapter layer bridging game calls to deko3d
+|   |-- timeshift_app.cpp          # Application lifecycle and initialization
+|   |-- renut_tuning_shims.cpp     # Depth, ZCull, EDRAM format configuration
+|   |-- draw_hooks.cpp             # Render pass interception
+|   `-- tiling_hooks.cpp           # XGraphics texture tiling hooks
+|-- upstream/sa2-nx/      # renut_engine runtime (deko3d backend, shader translator)
+|-- private/              # SDK (audio, kernel, memory) and recompiled C++ sources
+|   |-- app/generated/             # Recompiled game code (timeshift_recomp.*.cpp)
+|   `-- sdk/                       # rexglue (audio, kernel, memory)
+|-- tools/                # Build and deployment scripts
+|   |-- build_switch_app.py        # Links timeshift.nro
+|   |-- prepare_switch_cache.py    # Prepares shaders and assets
+|   `-- deploy_candidate.py        # Deploys to Switch via FTP
+|-- MODLOG.md             # Development chronicle (Parts 1-245)
+|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (4,283 shaders)
+`-- timeshift.toml        # Game configuration file for Switch
 ```
 
 ---
 
-## Сборка
+## How to Build
 
-### Что нужно:
-- **devkitPro** (`devkitA64`, `libnx`, `deko3d`).
-- **Linux или WSL2** (Ubuntu/Debian).
+### Prerequisites:
+- **devkitPro** with packages:
+  - `devkitA64` (`aarch64-none-elf-g++`)
+  - `libnx`
+  - `deko3d`
+- **Linux or WSL2** (Ubuntu/Debian).
 - **Python 3.10+**, **CMake**, **Ninja**.
 
-### Команды:
+### Build Commands:
 
-1. **Сборка внутренней библиотеки (`rexruntime`):**
+1. **Build internal runtime (`rexruntime`):**
    ```bash
    cd private/sdk
    ninja -C /path/to/switch-build rexaudio rexruntime
    ```
 
-2. **Сборка файла для Switch (`timeshift.nro`):**
+2. **Build Switch binary (`timeshift.nro`):**
    ```bash
    python3 tools/build_switch_app.py
    ```
-   Готовый файл появится в `build/app-switch/timeshift.nro`.
+   The output binary will be created at: `build/app-switch/timeshift.nro`.
 
 ---
 
-## Запуск на консоли
+## Running on Nintendo Switch
 
-> **Важно:** Файлы оригинальной игры защищены авторским правом и в репозиторий не входят. Нужна версия TimeShift для Xbox 360.
+> **Important:** Original game assets are copyrighted and NOT included in this repository. You must supply your own extracted TimeShift game files (Xbox 360 version).
 
-1. Создайте на SD-карте консоли папку:
+1. Create a folder on your Switch SD card:
    ```
    /switch/timeshift/
    ```
-2. Скопируйте туда:
+2. Copy the following files into that folder:
    - `timeshift.nro`
    - `timeshift.toml`
    - `deko3d_shaders_f0.bin`
-   - Папку `game/` с распакованными файлами игры TimeShift.
-3. **Запускать ТОЛЬКО через Title Override** (зажмите и удерживайте **R** при запуске любой установленной игры на консоли).  
-   Через обычный «Альбом» (Applet Mode) игра не запустится из-за нехватки памяти.
+   - `game/` folder with extracted TimeShift game data.
+3. **Launch ONLY via Title Override:**  
+   Hold **R** while launching any installed retail game on your Switch to open hbmenu with full memory access.  
+   *Do NOT launch via the Album (Applet Mode), or the game will crash due to out-of-memory errors!*
 
 ---
 
-## Как предложить свои исправления (слияние / Pull Request)
+## How to Contribute (Pull Requests)
 
-Если у вас получилось что-то улучшить или починить:
-1. Сделайте **Fork** (копию) этого репозитория на свой аккаунт GitHub.
-2. Внесите изменения в своей копии.
-3. Отправьте запрос на слияние (**Pull Request**) в этот репозиторий.
-4. Я просто зайду на страницу проекта, прочитаю описание и нажму зеленую кнопку подтверждения слияния (Merge) — ваши правки автоматически объединятся с основным проектом.
+If you manage to fix any of the remaining issues or improve performance:
+1. **Fork** this repository to your own GitHub account.
+2. Commit your fixes in your fork.
+3. Submit a **Pull Request** to this repository.
+4. Working pull requests will be reviewed and merged promptly.
 
 ---
 
-## Лицензия
+## Credits & Acknowledgments
 
-TimeShift является торговой маркой Saber Interactive / Sierra / Activision. Данный проект — некоммерческое исследование обратной разработки и статической рекомпиляции.
+- **[@Oleksa126](https://github.com/Oleksa126) (Oleksandr Bazavliak):**  
+  Special thanks and deep gratitude for his fork ([Oleksa126/timeshift-nx](https://github.com/Oleksa126/timeshift-nx)), which contributed:
+  - Dynamic heap initialization via `__libnx_initheap` (~2.4 GB process RAM) preventing out-of-memory crashes.
+  - Backing memory granule pooling and decommit rounding in `guest_memory_switch.cpp`.
+  - Fix for `EncodeUnorm24` depth overflow in `depth_resolve.hlsli`, which resolved the fullscreen depth-of-field blur issue.
+  - Fix for storm and weather lightning occlusion through indoor walls in `pipeline.cpp`.
+  - Texture header protection for GPU-written surfaces during dynamic streaming.
+  - GPU submit telemetry and draw history tracking.
+- **ReX / xenia team:** For foundational Xbox 360 static recompilation and emulation research.
+- **devkitPro & switchbrew team:** For `libnx`, `deko3d`, and the homebrew toolchain.
+
+---
+
+## License & Disclaimer
+
+TimeShift is a registered trademark of Saber Interactive / Sierra / Activision. This repository is an unofficial, non-commercial reverse-engineering and static recompilation research project.
+
+The source code in this repository is distributed for educational and research purposes under the terms of the BSD 3-Clause License and applicable upstream licenses. Original game assets (models, textures, audio, game scripts) are copyrighted by their respective owners and are NOT included in this repository.

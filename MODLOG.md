@@ -471,3 +471,86 @@ inja -v timeshift_renut_core): [3/3] exit code 0 (	extures.o, pipeline.o, draw.o
   - Remote readback SHA-256 from Switch SD card: `6ff79c04daeeabf60d0c053b0a9939c6026106e802c79c5f56c327fd88f1a951` (100% bit-for-bit match).
   - Cleaned remote `timeshift.log` and `deko3d.log`.
 - Next: Launch via Title Override (Hold R on any installed game) to test razor-sharp native rendering, high-res textures, occluded lightning, and continuous audio.
+
+### 2026-11-12 — Part 243: Oleksa126 Fork Review, Auto-Sleep & Dual-Input Integration, and Indirect Call Vtable Freeze Resolution
+- Root Cause Analysis & Log Diagnosis:
+  1. Gameplay Freeze Root Cause ("игра намертво виснет хотя звук идёт"):
+     - Analysis of `hang_timeshift.log` revealed repetitive logs:
+       `[error] [core] TSDBG missing guest function called: 0x825B70C0`
+       `[error] [core] TSDBG missing guest function called: 0x825B7140`
+     - Indirect function call dispatcher (`function_dispatcher.cpp`) resolved missing guest addresses to `&InvalidFunctionTrap`, returning NO-OP. The guest code looped indefinitely waiting for state advancement.
+     - Root cause: Missing virtual base adjustor thunks in `0x825B6F60`–`0x825B7160` range. The original static recompiler missed unreferenced entries in multiple-inheritance vtables.
+  2. Fork Review (Oleksa126 `https://github.com/Oleksa126/timeshift-nx`):
+     - Local integration only (no git push).
+     - Adopted dynamic heap expansion `__libnx_initheap()` up to 2432 MB process RAM (`windowed_app_main_switch.cpp`).
+     - Adopted guest memory backing chunk reuse pool `g_free_backings` and granule decommit rounding fix (`guest_memory_switch.cpp`).
+     - Adopted 24-bit depth resolve overflow fix (`depth_resolve.hlsli`).
+     - Adopted dynamic texture shape/swizzle validation to protect mip headers (`textures.cpp`).
+     - Kept single sample count enforcement (`surfaces.cpp`).
+     - Rejected outdated depth disable workarounds in `pipeline.cpp` / `draw.cpp` to prevent lightning bleed.
+  3. Sleep Inhibition & Multi-Controller Input:
+     - Disabled Horizon OS auto-sleep and screen dimming via `appletSetAutoSleepDisabled(true)` and `appletSetMediaPlaybackState(true)` (`rex_app_switch.cpp`).
+     - Enabled dual handheld/pro controller input driver (`pad_handheld_` and `pad_pro_`) allowing seamless transition between physical Joy-Cons and `sys-autopilot` virtual input.
+  4. Complete Vtable Thunk Restoration:
+     - Restored 22 missing thunks (`sub_825B6F70`..`sub_825B7160`) in `timeshift_thunk_adjustors.cpp`, `timeshift_funcs.h`, `timeshift_register.cpp`, and `timeshift_init.cpp`.
+     - Verified target function declarations and `audit_private_trees.py` / `check_profile.py` integrity.
+- Candidate Binary & Build Verification:
+  - Compiled and linked 220 AArch64 units: `timeshift.elf` (539,742,584 B, SHA-256 `ed9e11add0525725109e3fc7677c889c4a862d4eefc460aea8e6dc889637986a`).
+  - Packaged: `timeshift.nro` (87,931,077 B, SHA-256 `596cedcefc4c0e1f240f572a5323962be8bfe9be991c3ffebe359c7e88ecfc3e`, LastWriteTime 2026-11-12 17:22:25).
+  - Symbol audit: 26 TimeShift hooks verified, 0 foreign hooks.
+- Cryptographic Deployment Proof:
+  - Deployed directly to Nintendo Switch via sys-autopilot HTTP PUT (`192.168.0.7:4150/files?path=/switch/timeshift/timeshift.nro`).
+  - Transfer complete: 100% in 34.70s (2.42 MB/s).
+  - Remote readback SHA-256 from Switch SD card: `596cedcefc4c0e1f240f572a5323962be8bfe9be991c3ffebe359c7e88ecfc3e` (100% cryptographic match).
+- Next: Launch via Title Override (Hold R on any installed game) to verify that gameplay proceeds smoothly through the previous freeze point.
+
+### 2026-11-12 — Part 244: Save System Restoration, Storage Device Selection ABI, & XAM Async UI Protocol Fixes
+- Root Cause Analysis & Storage Flow Diagnosis:
+  1. Save System Non-functional Root Cause ("может починим сохранения? они не работают"):
+     - Analysis of `latest_timeshift.log` showed that during boot/profile load, TimeShift calls `XamShowDeviceSelectorUI user=00000000 type=00000001 dev_ptr=40104A88 ovlp=40104A90`.
+     - Inspection of guest PPC caller in `timeshift_recomp.79.cpp:7492` (`sub_823326C8`):
+       The caller expects `XamShowDeviceSelectorUI` to return `997` (`ERROR_IO_PENDING` / `0x000003E5`) whenever an `XOVERLAPPED` pointer is passed.
+       Because `xam_ui_switch.cpp` synchronously returned `X_ERROR_SUCCESS` (0), the test `ctx.cr6.compare<uint32_t>(r3, 997)` evaluated to FALSE.
+       The game immediately branched into the failure path: `li r11, -1; stw r11, 168(r24);`, setting the storage device status to -1 (FAILED/CANCELLED). Consequently, save file enumeration, checkpoint writes, and `XamContentCreate` were completely aborted.
+  2. Extended XAM Async UI Protocol Rectification:
+     - In `private/sdk/src/kernel/xam/xam_ui_switch.cpp`:
+       - `XamShowDeviceSelectorUI_entry`: Writes internal storage ID `0x00000001`, marks overlapped as complete via `CompleteOverlappedImmediate(..., X_ERROR_SUCCESS)`, and returns `X_ERROR_IO_PENDING` (997) when `overlapped` is present.
+       - `XamShowMessageBoxUI_entry`: Writes `active_button` into `result_ptr`, marks overlapped as complete, and returns `X_ERROR_IO_PENDING` (997).
+       - `XamShowKeyboardUI_entry`: Copies `default_text` to `result_text`, marks overlapped complete, and returns `X_ERROR_IO_PENDING` (997).
+       - `XamShowMessageBoxUIEx_entry`: Replaced stub `REX_EXPORT_STUB_RETURN(__imp__XamShowMessageBoxUIEx, 0)` with full 10-parameter implementation handling `result_ptr` and `overlapped`, returning `X_ERROR_IO_PENDING`.
+  3. Switch Filesystem Bootstrap:
+     - In `private/sdk/src/ui/switch/windowed_app_main_switch.cpp`: Added `mkdir("sdmc:/switch/timeshift/user", 0755);` to ensure the user save package directory exists upfront.
+  4. Build Integrity & SDK Tree Synchronization:
+     - Synchronized changes into `/root/lab/rexglue-sdk`.
+     - Recompiled `librexruntimerd.a` in `/root/lab/switch-build` and `windowed_app_main_switch.o` in `/root/lab/switch-build-app`.
+     - Updated `tools/audit_private_trees.py` (`sdk_managed`) hashes; passed full private trees audit.
+- Candidate Binary & Build Verification:
+  - Compiled and linked 220 AArch64 units: `timeshift.elf` (539,823,792 B, SHA-256 `3826991f1101211b4d320e49e2ebbf1584b8db7db3c341fbe4c4bcfbaa4c7e08`).
+  - Packaged: `timeshift.nro` (87,935,173 B, SHA-256 `6ff6d561517b9ae7c7fdf869f64485ff17279514b05e59d6aaeb0b469042d54d`, LastWriteTime 2026-11-12 18:28:42).
+  - Symbol audit: 26 TimeShift hooks verified, 0 foreign hooks.
+- Cryptographic Deployment Proof:
+  - Deployed directly to Nintendo Switch via sys-autopilot HTTP PUT (`192.168.0.7:4150/files?path=/switch/timeshift/timeshift.nro`).
+  - Remote readback SHA-256 from Switch SD card: `6ff6d561517b9ae7c7fdf869f64485ff17279514b05e59d6aaeb0b469042d54d` (100% cryptographic match).
+- Next: Launch via Title Override (Hold R on any installed game) to verify checkpoint saves and profile creation.
+
+### 2026-11-12 — Part 245: Double Path Prefix Elimination & Filesystem Safety in Save Creation
+- Root Cause Analysis & Log Diagnosis:
+  1. Black Screen on Loading New Game:
+     - Log analysis (`timeshift_current.log`) revealed:
+       `[critical] [core] [FATAL] Dispatch thread: deferred completion threw 'filesystem error: status: Invalid argument [sdmc:/switch/timeshift/sdmc:/switch/timeshift/user/B13EBABEBABEBABE/565507DA/00000001/TSS_11122026_134156_00001_-0001]'`
+     - When starting a new game (`ts2_city_part01`), TimeShift called `XamContentCreate` to write the initial autosave.
+     - In `KernelState::KernelState` (`kernel_state.cpp:73`), `user_data_root` was unconditionally processed with `std::filesystem::absolute(user_data_root)`. Under devkitA64 libnx newlib POSIX, `sdmc:/...` does not start with `/`, so `is_absolute()` evaluated to false. `std::filesystem::absolute` prepended `current_path()` (`sdmc:/switch/timeshift`), doubling the path prefix: `sdmc:/switch/timeshift/sdmc:/switch/timeshift/user`.
+     - When `ContentManager::CreateContent` called `std::filesystem::exists` on the duplicated prefix path, Horizon OS rejected the invalid path with `Invalid argument`, throwing a C++ exception which crashed the kernel dispatch thread. The main thread stalled indefinitely waiting on the uncompleted overlapped save event.
+  2. Protocol & Defensive Hardening:
+     - In `kernel_state.cpp:71`: Guarded `std::filesystem::absolute` under `#if !REX_PLATFORM_SWITCH`, matching the existing guard in `runtime.cpp:300`.
+     - In `content_manager.cpp`:
+       - Constructor: Added sanitizer stripping accidental `sdmc:/switch/timeshift/sdmc:/` duplicates if passed.
+       - All filesystem methods (`CreateContent`, `OpenContent`, `WriteContentHeaderFile`, `ReadContentHeaderFile`, `ResolvePackage`, `ContentExists`): Switched from throwing `std::filesystem` methods to non-throwing `std::error_code ec` overloads.
+  3. Build & Cryptographic Deployment Proof:
+     - Synchronized into `/root/lab/rexglue-sdk`, recompiled `librexruntimerd.a` in `/root/lab/switch-build`.
+     - Updated `tools/audit_private_trees.py` (`sdk_managed` hashes for `kernel_state.cpp` and `content_manager.cpp`); passed full private trees audit.
+     - Linked `timeshift.elf` (539,887,496 B, SHA-256 `47163a55c62792bbe5f43b3e8e3017de7136f6177b50cb155345e08ea63ff7af`).
+     - Packaged: `timeshift.nro` (87,935,173 B, SHA-256 `403f538747210773555f4458811bd125b2ae49c640084116e43759e9a1593e1e`, LastWriteTime 2026-11-12 18:49:58).
+     - Deployed directly to Nintendo Switch via sys-autopilot HTTP PUT.
+     - Remote readback SHA-256 verified bit-for-bit: `403f538747210773555f4458811bd125b2ae49c640084116e43759e9a1593e1e`.
+- Next: Launch via Title Override and start a New Game to verify smooth transition from video cutscene into gameplay and verified checkpoint saves.

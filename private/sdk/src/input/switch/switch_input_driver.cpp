@@ -35,9 +35,11 @@ inline int16_t ApplyDeadzone(int32_t x, int32_t y, int16_t* out_y) {
 }  // namespace
 
 X_STATUS SwitchInputDriver::Setup() {
-  padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-  padInitializeDefault(&pad_);
-  padUpdate(&pad_);
+  padConfigureInput(4, HidNpadStyleSet_NpadStandard);
+  padInitialize(&pad_handheld_, HidNpadIdType_Handheld);
+  padInitialize(&pad_pro_, HidNpadIdType_No1, HidNpadIdType_No2);
+  padUpdate(&pad_handheld_);
+  padUpdate(&pad_pro_);
   std::memset(&last_gamepad_, 0, sizeof(last_gamepad_));
   packet_number_ = 1;
   ready_ = true;
@@ -45,7 +47,8 @@ X_STATUS SwitchInputDriver::Setup() {
 }
 
 void SwitchInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
-  padUpdate(&pad_);
+  padUpdate(&pad_handheld_);
+  padUpdate(&pad_pro_);
   DeviceInfo info;
   info.id = DeviceId{kDeviceId};
   info.name = "Nintendo Switch controller";
@@ -58,8 +61,9 @@ X_RESULT SwitchInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
   if (!out_state || id != DeviceId{kDeviceId}) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
-  padUpdate(&pad_);
-  const u64 held = padGetButtons(&pad_);
+  padUpdate(&pad_handheld_);
+  padUpdate(&pad_pro_);
+  const u64 held = padGetButtons(&pad_handheld_) | padGetButtons(&pad_pro_);
 
   uint16_t buttons = 0;
   // Default to native Nintendo Switch layout:
@@ -91,12 +95,28 @@ X_RESULT SwitchInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
   if (held & HidNpadButton_Left) buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
   if (held & HidNpadButton_Right) buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
 
-  const HidAnalogStickState left = padGetStickPos(&pad_, 0);
-  const HidAnalogStickState right = padGetStickPos(&pad_, 1);
+  const HidAnalogStickState left_h = padGetStickPos(&pad_handheld_, 0);
+  const HidAnalogStickState right_h = padGetStickPos(&pad_handheld_, 1);
+  const HidAnalogStickState left_p = padGetStickPos(&pad_pro_, 0);
+  const HidAnalogStickState right_p = padGetStickPos(&pad_pro_, 1);
 
-  int16_t ly = 0, ry = 0;
-  const int16_t lx = ApplyDeadzone(left.x, left.y, &ly);
-  const int16_t rx = ApplyDeadzone(right.x, right.y, &ry);
+  int16_t ly_h = 0, ry_h = 0;
+  const int16_t lx_h = ApplyDeadzone(left_h.x, left_h.y, &ly_h);
+  const int16_t rx_h = ApplyDeadzone(right_h.x, right_h.y, &ry_h);
+
+  int16_t ly_p = 0, ry_p = 0;
+  const int16_t lx_p = ApplyDeadzone(left_p.x, left_p.y, &ly_p);
+  const int16_t rx_p = ApplyDeadzone(right_p.x, right_p.y, &ry_p);
+
+  const int32_t mag_l_h = int32_t(lx_h) * lx_h + int32_t(ly_h) * ly_h;
+  const int32_t mag_l_p = int32_t(lx_p) * lx_p + int32_t(ly_p) * ly_p;
+  const int16_t lx = (mag_l_h >= mag_l_p) ? lx_h : lx_p;
+  const int16_t ly = (mag_l_h >= mag_l_p) ? ly_h : ly_p;
+
+  const int32_t mag_r_h = int32_t(rx_h) * rx_h + int32_t(ry_h) * ry_h;
+  const int32_t mag_r_p = int32_t(rx_p) * rx_p + int32_t(ry_p) * ry_p;
+  const int16_t rx = (mag_r_h >= mag_r_p) ? rx_h : rx_p;
+  const int16_t ry = (mag_r_h >= mag_r_p) ? ry_h : ry_p;
 
   const uint8_t lt = (held & HidNpadButton_ZL) ? 0xFF : 0x00;
   const uint8_t rt = (held & HidNpadButton_ZR) ? 0xFF : 0x00;

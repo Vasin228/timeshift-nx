@@ -69,9 +69,11 @@ KernelState::KernelState(Runtime* emulator)
   user_profile_->set_kernel_state(this);
 
   auto user_data_root = emulator_->user_data_root();
+#if !REX_PLATFORM_SWITCH
   if (!user_data_root.empty()) {
     user_data_root = std::filesystem::absolute(user_data_root);
   }
+#endif
   content_manager_ = std::make_unique<xam::ContentManager>(this, user_data_root);
 
   if (shared_kernel_state_ != nullptr) {

@@ -117,6 +117,7 @@ int RunWindowedApp(int argc, char** argv) {
 
   mkdir("sdmc:/switch", 0755);
   mkdir("sdmc:/switch/timeshift", 0755);
+  mkdir("sdmc:/switch/timeshift/user", 0755);
   FILE* log_fp = freopen("sdmc:/switch/timeshift/timeshift.log", "w", stdout);
   if (log_fp) {
     dup2(fileno(stdout), fileno(stderr));
