@@ -8,9 +8,9 @@ verify_and_apply(False)
 profile=json.loads((ROOT/'adapter/fence_read_profile.json').read_text())
 managed={e['file']:e['sha256'] for e in profile['private_app_files']}
 managed.update({
-    'generated/default/timeshift_funcs.h': '6b9e29d8bb1ca04a1966d4d44dc2ba7d19cc7789658ca61b91817f29e05334fd',
-    'generated/default/timeshift_init.cpp': 'bbdcae4fb99217414d768e3e074f124a884ad19b9a9b14c9bd0f8e72c4907961',
-    'generated/default/timeshift_register.cpp': '077aa47857220e69b49c5b29f9f90ce133c5e0407d5cbdb885e3b275f0ed1d29',
+    'generated/default/timeshift_funcs.h': 'e73c2b0eae53d48ac3a19bf3d106b12c07e95d91e0e86efa062c8128bed46beb',
+    'generated/default/timeshift_init.cpp': 'dd79cda909f08b43087f28b884ef6a450f539af01b5be1e1010e0764265f0fb0',
+    'generated/default/timeshift_register.cpp': 'fb0bcab1a878161ac3f2aee5461434ffa21f67724a48d098dca5751f31a7df68',
 })
 
 sdk_managed = {
@@ -23,7 +23,14 @@ sdk_managed = {
     'src/audio/xma_decoder_switch.cpp': 'a5c95bdef00681ccbdd5bd273015446dd95c71ec664424ed525b80ee2bc15e85',
     'src/graphics/switch_native/native_textures.cpp': '8b6820aeecdd769851d930ca467986ffbed36795352403d97ed52782a810baac',
     'include/rex/audio/xma/context.h': '3cbe892635b066fafcaaceae7e9e7d10675f1a2416d3f97a2fd74dbaca7a7fed',
-    'src/ui/switch/rex_app_switch.cpp': 'a959054684740369661240b228a131feab5574ec5005009ba15bbb4f362db9e4',
+    'src/ui/switch/rex_app_switch.cpp': 'd6ac46f21c2ed5632bde775976d775ba4239278f5a3bf569c8674fdbc1ca2339',
+    'src/input/switch/switch_input_driver.cpp': '8b8342e147eb6ae1535f7b6cabdc9088d5e3c6cc7801df0842f75f2eb7687e4c',
+    'src/input/switch/switch_input_driver.h': '5279b0c39440cbfef6b5c62f4919cc412d764b06636a5adf3aba931fbae68d1a',
+    'src/core/guest_memory_switch.cpp': '9a95adf94036cc82caa2b041610a467410eb9bc9c4424d3d30613321324a684b',
+    'src/ui/switch/windowed_app_main_switch.cpp': '049a31aa6ef996cb70d2122332867933be344a43586849256f32c211e52cac5c',
+    'src/kernel/xam/xam_ui_switch.cpp': 'ec6e4981f4ce754b388a194516b65abead375cbde73232a505f3de13c7b5566c',
+    'src/system/kernel_state.cpp': '2e35ee138431c6e14a190f18ac2379ce54cb72ac71b6380ded8df3e807f4906f',
+    'src/system/xam/content_manager.cpp': '114128f708144edd343bc265608f23850d28fa8ebb100d9b076d5c74a29c2797',
 }
 
 frozen=ROOT.parent/'timeshift-recomp/frozen/vulkan-part181'

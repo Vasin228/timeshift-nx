@@ -33,7 +33,8 @@ class SwitchInputDriver final : public InputDriver {
 
  private:
 #if defined(__SWITCH__)
-  PadState pad_{};
+  PadState pad_handheld_{};
+  PadState pad_pro_{};
 #endif
   X_INPUT_GAMEPAD last_gamepad_{};
   uint32_t packet_number_ = 0;

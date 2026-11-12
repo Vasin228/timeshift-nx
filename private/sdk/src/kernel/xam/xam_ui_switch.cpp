@@ -10,6 +10,7 @@
 #include <rex/logging.h>
 #include <rex/hook.h>
 #include <rex/types.h>
+#include <rex/string.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xtypes.h>
 
@@ -34,6 +35,7 @@ u32 XamShowDeviceSelectorUI_entry(u32 user_index, u32 content_type, u32 content_
   }
   if (overlapped) {
     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
   }
   return X_ERROR_SUCCESS;
 }
@@ -48,6 +50,7 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
   }
   if (overlapped) {
     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
   }
   return X_ERROR_SUCCESS;
 }
@@ -56,8 +59,32 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
                             mapped_wstring title, mapped_wstring description,
                             mapped_wstring result_text, u32 length, mapped_void overlapped) {
   REXKRNL_INFO("XamShowKeyboardUI user={:08X}", uint32_t(user_index));
+  if (result_text) {
+    if (default_text) {
+      rex::string::copy_and_swap_truncating(result_text, default_text.value(), length);
+    } else {
+      std::memset(result_text, 0, static_cast<size_t>(length) * 2);
+    }
+  }
   if (overlapped) {
     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_SUCCESS;
+}
+
+u32 XamShowMessageBoxUIEx_entry(u32 user_index, u32 flags, mapped_wstring title,
+                                u32 button_count, mapped_wstring text, u32 unk1,
+                                u32 unk2, u32 active_button,
+                                mapped_u32 result_ptr, mapped_void overlapped) {
+  REXKRNL_INFO("XamShowMessageBoxUIEx user={:08X} active={}",
+               uint32_t(user_index), uint32_t(active_button));
+  if (result_ptr) {
+    *result_ptr = active_button;
+  }
+  if (overlapped) {
+    REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
   }
   return X_ERROR_SUCCESS;
 }
@@ -69,6 +96,7 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
 REX_EXPORT(__imp__XamIsUIActive, rex::kernel::xam::XamIsUIActive_entry)
 REX_EXPORT(__imp__XamShowDeviceSelectorUI, rex::kernel::xam::XamShowDeviceSelectorUI_entry)
 REX_EXPORT(__imp__XamShowMessageBoxUI, rex::kernel::xam::XamShowMessageBoxUI_entry)
+REX_EXPORT(__imp__XamShowMessageBoxUIEx, rex::kernel::xam::XamShowMessageBoxUIEx_entry)
 REX_EXPORT(__imp__XamShowKeyboardUI, rex::kernel::xam::XamShowKeyboardUI_entry)
 
 REX_EXPORT_STUB_RETURN(__imp__XamShowAchievementsUI, 0);
@@ -76,7 +104,6 @@ REX_EXPORT_STUB_RETURN(__imp__XamShowDirtyDiscErrorUI, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowFriendsUI, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowGamerCardUIForXUID, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowMarketplaceUI, 0);
-REX_EXPORT_STUB_RETURN(__imp__XamShowMessageBoxUIEx, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowPlayersUI, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowPartyUI, 0);
 REX_EXPORT_STUB_RETURN(__imp__XamShowCommunitySessionsUI, 0);

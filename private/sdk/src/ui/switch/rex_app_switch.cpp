@@ -203,6 +203,11 @@ bool ReXApp::SetupPresentation() {
 
 #if defined(__SWITCH__)
   LogSwitchPerformanceConfig();
+  // Part 243: Inhibit screen dimming and auto-sleep so the console never sleeps
+  // during gameplay or autonomous testing.
+  appletSetAutoSleepDisabled(true);
+  appletSetMediaPlaybackState(true);
+  REXLOG_INFO("[applet] Auto-sleep and screen dimming permanently disabled");
 #endif
 
   config_.gpu_plugin = "xenos";
