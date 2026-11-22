@@ -1468,10 +1468,6 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
   yo += float(ty);
 
   ViewportState vs;
-  if (one_tile) {  // Renut upstream 574b488 (the Jinjo Bingo silhouette)
-    vs.pixel_origin[0] = float(tile_rect.x1);
-    vs.pixel_origin[1] = float(tile_rect.y1);
-  }
   const float min_z = std::clamp(zo, 0.0f, 1.0f), max_z = std::clamp(zo + zs, 0.0f, 1.0f);
   // banjo-nx (2026-10-18, banjo_renut_half_pixel_offset): PA_SU_VTX_CNTL.pix_center (device 0x29C0 bit 0, which
   // D3DRS_HALFPIXELOFFSET sets) 0 puts the pixel centres at integer window coordinates (D3D9's), so the GPU's window
@@ -1482,6 +1478,8 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
       (banjo::renut_gpu::HalfPixelOffsetOn() && !(device.U32(d3d::kDeviceOffsetRegisters + (0x2284 - 0x2000)) & 1))
           ? 0.5f
           : 0.0f;
+  vs.pixel_origin[0] = (one_tile ? float(tile_rect.x1) : 0.0f) + pixel_center;
+  vs.pixel_origin[1] = (one_tile ? float(tile_rect.y1) : 0.0f) + pixel_center;
   // SetViewport's rectangle back from its scale and offset: x = offset - scale
   // and width = 2 * scale; y = offset + scale and height = -2 * scale (the
   // scale is negative: y goes down).
@@ -2110,9 +2108,16 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
     }
     sc.texture_indices[dim][r] = index;
     TextureFetch sampler_fetch = fetch;
-    if (header) {
+    if (header && !binding.gpu_written) {
       const TextureFetch header_fetch = TextureFetch::FromHeader(header->Format);
-      if (header_fetch.IsTexture() && (!binding.gpu_written || header_fetch.BasePage() != 0)) {
+      const bool header_matches_fetch =
+          header_fetch.IsTexture() &&
+          ((header_fetch.BasePage() == fetch.BasePage() && header_fetch.BasePage() != 0) ||
+           (header_fetch.MipPage() != 0 && header_fetch.MipPage() == fetch.MipPage() && fetch.BasePage() == 0)) &&
+          ((header_fetch.dword[1] & 0xFFFu) == (fetch.dword[1] & 0xFFFu)) &&
+          ((header_fetch.dword[3] & 0x0007FFFFu) == (fetch.dword[3] & 0x0007FFFFu)) &&
+          ((header_fetch.dword[5] & 0x600u) == (fetch.dword[5] & 0x600u));
+      if (header_matches_fetch) {
         sampler_fetch.dword[1] = (sampler_fetch.dword[1] & 0xFFFu) | (header_fetch.dword[1] & ~0xFFFu);
         if (header_fetch.dword[4] & 0x3FCu)
           sampler_fetch.dword[4] = (sampler_fetch.dword[4] & ~0x3FCu) | (header_fetch.dword[4] & 0x3FCu);

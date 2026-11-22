@@ -13,12 +13,21 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/frame_latency.h>
+#include <rex/logging.h>
+#include <spdlog/sinks/sink.h>
+#include <string_view>
 #include <xxhash.h>
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <pthread.h>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #if defined(PLUME_DEKO3D) || defined(__SWITCH__) || defined(REX_PLATFORM_SWITCH)
 #include <plume_deko3d.h>
@@ -27,8 +36,210 @@
 #include <switch.h>
 #endif
 
+namespace timeshift::telemetry {
+extern std::atomic<uint32_t> g_telemetry_frame_draws;
+
+namespace {
+constexpr uint32_t kWarmupFrames = 60;
+constexpr uint32_t kWindowFrames = 300;
+constexpr uint32_t kOnePctTailCount = 3;  // 1% of 300 frames
+
+std::atomic<uint32_t> g_frame_kicks{0};
+std::atomic<uint32_t> g_frame_pipeline_binds{0};
+std::atomic<uint64_t> g_frame_upload_bytes{0};
+std::atomic<uint32_t> g_frame_resolves_drawn{0};
+std::atomic<uint32_t> g_frame_resolves_skipped{0};
+std::atomic<uint32_t> g_frame_depth_only{0};
+std::atomic<uint64_t> g_frame_gpu_us{0};
+std::atomic<uint64_t> g_frame_game_wait_us{0};
+
+struct PerfSample {
+  uint32_t frame_idx;
+  double frame_ms;
+  double render_busy_ms;
+  double gpu_ms;
+  double game_wait_ms;
+  uint32_t draws;
+  uint32_t pipeline_binds;
+  uint32_t cmd_submits;
+  uint64_t upload_bytes;
+  uint32_t resolves_drawn;
+  uint32_t resolves_skipped;
+  uint32_t depth_only;
+};
+
+void ResetPerFrameCounters() {
+  g_telemetry_frame_draws.store(0, std::memory_order_relaxed);
+  g_frame_kicks.store(0, std::memory_order_relaxed);
+  g_frame_pipeline_binds.store(0, std::memory_order_relaxed);
+  g_frame_upload_bytes.store(0, std::memory_order_relaxed);
+  g_frame_resolves_drawn.store(0, std::memory_order_relaxed);
+  g_frame_resolves_skipped.store(0, std::memory_order_relaxed);
+  g_frame_depth_only.store(0, std::memory_order_relaxed);
+  g_frame_gpu_us.store(0, std::memory_order_relaxed);
+  g_frame_game_wait_us.store(0, std::memory_order_relaxed);
+}
+
+void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
+  static char csv_buf[65536];
+  size_t pos = 0;
+  auto append = [&](int n) {
+    if (n > 0 && pos + size_t(n) < sizeof(csv_buf)) {
+      pos += size_t(n);
+    } else if (n > 0) {
+      pos = sizeof(csv_buf) - 1;
+    }
+  };
+
+  append(std::snprintf(
+      csv_buf + pos, sizeof(csv_buf) - pos,
+      "frame_idx,frame_ms,render_busy_ms,gpu_ms,game_wait_ms,draws,pipeline_binds,"
+      "cmd_submits,upload_bytes,resolves_drawn,resolves_skipped,depth_only\n"));
+
+  double sum_frame_ms = 0.0;
+  double sum_render_ms = 0.0;
+  double sum_gpu_ms = 0.0;
+  double sum_wait_ms = 0.0;
+  uint64_t sum_draws = 0;
+  uint64_t sum_binds = 0;
+  uint64_t sum_submits = 0;
+  uint64_t sum_upload_bytes = 0;
+  double sorted_frame_ms[kWindowFrames];
+
+  for (uint32_t i = 0; i < count; ++i) {
+    const PerfSample& s = samples[i];
+    sum_frame_ms += s.frame_ms;
+    sum_render_ms += s.render_busy_ms;
+    sum_gpu_ms += s.gpu_ms;
+    sum_wait_ms += s.game_wait_ms;
+    sum_draws += s.draws;
+    sum_binds += s.pipeline_binds;
+    sum_submits += s.cmd_submits;
+    sum_upload_bytes += s.upload_bytes;
+    sorted_frame_ms[i] = s.frame_ms;
+
+    if (pos + 160 < sizeof(csv_buf)) {
+      append(std::snprintf(
+          csv_buf + pos, sizeof(csv_buf) - pos,
+          "%u,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%llu,%u,%u,%u\n",
+          s.frame_idx, s.frame_ms, s.render_busy_ms, s.gpu_ms, s.game_wait_ms,
+          s.draws, s.pipeline_binds, s.cmd_submits,
+          static_cast<unsigned long long>(s.upload_bytes),
+          s.resolves_drawn, s.resolves_skipped, s.depth_only));
+    }
+  }
+
+  std::sort(sorted_frame_ms, sorted_frame_ms + count, [](double a, double b) { return a > b; });
+  const uint32_t tail_n = std::min(kOnePctTailCount, count);
+  double worst_sum = 0.0;
+  for (uint32_t i = 0; i < tail_n; ++i) {
+    worst_sum += sorted_frame_ms[i];
+  }
+  const double avg_frame_ms = sum_frame_ms / double(count);
+  const double avg_fps = avg_frame_ms > 0.001 ? 1000.0 / avg_frame_ms : 0.0;
+  const double worst_avg_ms = worst_sum / double(tail_n);
+  const double low_1pct_fps = worst_avg_ms > 0.001 ? 1000.0 / worst_avg_ms : 0.0;
+  const double avg_render_ms = sum_render_ms / double(count);
+  const double avg_gpu_ms = sum_gpu_ms / double(count);
+  const double avg_wait_ms = sum_wait_ms / double(count);
+  const double avg_draws = double(sum_draws) / double(count);
+  const double avg_binds = double(sum_binds) / double(count);
+  const double avg_submits = double(sum_submits) / double(count);
+  const double avg_upload_kb = (double(sum_upload_bytes) / 1024.0) / double(count);
+
+  append(std::snprintf(
+      csv_buf + pos, sizeof(csv_buf) - pos,
+      "# summary,avg_frame_ms,avg_fps,one_pct_low_fps,avg_render_busy_ms,avg_gpu_ms,"
+      "avg_game_wait_ms,avg_draws,avg_pipeline_binds,avg_cmd_submits,avg_upload_kb\n"
+      "# summary_values,%.3f,%.2f,%.2f,%.3f,%.3f,%.3f,%.1f,%.1f,%.2f,%.1f\n",
+      avg_frame_ms, avg_fps, low_1pct_fps, avg_render_ms, avg_gpu_ms,
+      avg_wait_ms, avg_draws, avg_binds, avg_submits, avg_upload_kb));
+
+#if defined(__SWITCH__)
+  const char* path = "sdmc:/switch/timeshift/perf_baseline.csv";
+#else
+  const char* path = "perf_baseline.csv";
+#endif
+  if (FILE* f = std::fopen(path, "w")) {
+    std::fwrite(csv_buf, 1, pos, f);
+    std::fclose(f);
+  }
+  REXLOG_INFO(
+      "[perf] 300f CSV: avg={:.2f}ms ({:.1f} FPS, 1%low={:.1f}), render={:.2f}ms, "
+      "gpu={:.2f}ms, wait={:.2f}ms, draws={:.0f}, binds={:.0f}, submits={:.1f}, upload={:.1f}KB",
+      avg_frame_ms, avg_fps, low_1pct_fps, avg_render_ms, avg_gpu_ms,
+      avg_wait_ms, avg_draws, avg_binds, avg_submits, avg_upload_kb);
+}
+}  // namespace
+}  // namespace timeshift::telemetry
+
 // CVar for diagnostic shaders
 REXCVAR_DEFINE_BOOL(banjo_renut_diag_gpu_shaders, false, "Renut", "Diagnostic shader logging");
+
+namespace {
+
+class BenignNtCreateFileFilterSink final : public spdlog::sinks::sink {
+public:
+  explicit BenignNtCreateFileFilterSink(spdlog::sink_ptr inner) : inner_(std::move(inner)) {}
+
+  void log(const spdlog::details::log_msg &msg) override {
+    const std::string_view payload(msg.payload.data(), msg.payload.size());
+    if (payload.find("[NtCreateFile] FAILED") != std::string_view::npos) {
+      if (payload.find("SHADERS_cache") != std::string_view::npos ||
+          payload.find(".sdc") != std::string_view::npos ||
+          payload.find(".sdrc") != std::string_view::npos ||
+          payload.find("dictionary.str") != std::string_view::npos ||
+          payload.find("DATABASE") != std::string_view::npos ||
+          payload.find("SCENES") != std::string_view::npos ||
+          payload.find("VOSplines") != std::string_view::npos ||
+          payload.find(".rain") != std::string_view::npos ||
+          payload.find("0xc000000f") != std::string_view::npos) {
+        return;  // Suppress benign optional file/shader-cache probes from the HUD
+      }
+    }
+    inner_->log(msg);
+  }
+
+  void flush() override { inner_->flush(); }
+  void set_pattern(const std::string &pattern) override { inner_->set_pattern(pattern); }
+  void set_formatter(std::unique_ptr<spdlog::formatter> sink_formatter) override {
+    inner_->set_formatter(std::move(sink_formatter));
+  }
+
+private:
+  spdlog::sink_ptr inner_;
+};
+
+void InstallHudLogFilter() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::vector<std::pair<spdlog::sinks::sink *, spdlog::sink_ptr>> wrapped;
+    for (const auto &cat : rex::GetAllCategories()) {
+      if (!cat.logger)
+        continue;
+      auto &sinks = cat.logger->sinks();
+      for (auto &sink : sinks) {
+        if (!sink || dynamic_cast<BenignNtCreateFileFilterSink *>(sink.get())) {
+          continue;
+        }
+        spdlog::sink_ptr replacement;
+        for (const auto &entry : wrapped) {
+          if (entry.first == sink.get()) {
+            replacement = entry.second;
+            break;
+          }
+        }
+        if (!replacement) {
+          replacement = std::make_shared<BenignNtCreateFileFilterSink>(sink);
+          wrapped.emplace_back(sink.get(), replacement);
+        }
+        sink = replacement;
+      }
+    }
+  });
+}
+
+}  // namespace
 
 namespace banjo::renut_gpu {
 
@@ -199,13 +410,25 @@ void CountFurShell(bool drawn) { (void)drawn; }
 unsigned Deko3DUamFlags() { return 0; }
 int Deko3DCompileCore() { return 3; }
 int Deko3DCompilePriority() { return 0x2C; }
-void CountKickSubmit(int kicks) { (void)kicks; }
+void CountKickSubmit(int kicks) {
+  // Only kicks == 0 represents an actual GPU command list submit; 1 and 2 track RingCleaner flushes.
+  if (kicks == 0) {
+    timeshift::telemetry::g_frame_kicks.fetch_add(1, std::memory_order_relaxed);
+  }
+}
 void CountExactMemoHit(uint64_t bytes) { (void)bytes; }
-void CountRingPublished(uint64_t bytes) { (void)bytes; }
+void CountRingPublished(uint64_t bytes) {
+  timeshift::telemetry::g_frame_upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
+}
 void CountDeviceSwizzle(uint32_t frame) { (void)frame; }
 void CountHeaderDescDiffer(uint32_t frame) { (void)frame; }
-void CountDrawnResolve() {}
-void CountSkippedResolve(bool by_clear) { (void)by_clear; }
+void CountDrawnResolve() {
+  timeshift::telemetry::g_frame_resolves_drawn.fetch_add(1, std::memory_order_relaxed);
+}
+void CountSkippedResolve(bool by_clear) {
+  (void)by_clear;
+  timeshift::telemetry::g_frame_resolves_skipped.fetch_add(1, std::memory_order_relaxed);
+}
 void CountLazyWords(int what) { (void)what; }
 void CountHandOver(int what) { (void)what; }
 void CountPushedConstants(uint64_t bytes, int what) { (void)bytes; (void)what; }
@@ -214,10 +437,14 @@ void NotePipelineBuilt() {}
 void CountTessGrid(uint64_t corners, uint64_t vertices) { (void)corners; (void)vertices; }
 void CountBoolSpec(BoolSpecEvent event) { (void)event; }
 void ReportNvk() {}
-void BeforePipelineBind(plume::RenderPipeline *pipeline) { (void)pipeline; }
+void BeforePipelineBind(plume::RenderPipeline *pipeline) {
+  (void)pipeline;
+  timeshift::telemetry::g_frame_pipeline_binds.fetch_add(1, std::memory_order_relaxed);
+}
 int DiagBuildDelayMs() { return 0; }
 void ResolveTraceFrameStart() {}
 void BeforeDeviceCreated() {
+  InstallHudLogFilter();
 #if defined(PLUME_DEKO3D)
   plume::Deko3DOptions opts{};
   opts.zcull = Deko3DZcullOn();
@@ -236,7 +463,9 @@ void BeforeDeviceDestroyed() {}
 void StatsGameFrame() {}
 void StatsRenderThreadFrame(double busy_ms) { (void)busy_ms; }
 void StatsGpuFrame(double ms) { (void)ms; }
-void CountDepthOnly() {}
+void CountDepthOnly() {
+  timeshift::telemetry::g_frame_depth_only.fetch_add(1, std::memory_order_relaxed);
+}
 void CountLateStale(uint64_t copies) { (void)copies; }
 
 }  // namespace banjo::renut_gpu
@@ -276,13 +505,61 @@ namespace renut::frame_stats {
 
 void OnGameFrame() {}
 void OnGpuFrame(double ms) {
-  (void)ms;
+  const uint64_t us = ms > 0.0 ? static_cast<uint64_t>(ms * 1000.0) : 0ULL;
+  timeshift::telemetry::g_frame_gpu_us.fetch_add(us, std::memory_order_relaxed);
 }
 void OnRenderThreadFrame(double busy_ms) {
-  (void)busy_ms;
+  using Clock = std::chrono::steady_clock;
+  static uint32_t s_total_frames = 0;
+  static uint32_t s_sample_count = 0;
+  static bool s_has_prev = false;
+  static Clock::time_point s_prev_tp{};
+  static timeshift::telemetry::PerfSample s_samples[timeshift::telemetry::kWindowFrames]{};
+
+  const Clock::time_point now = Clock::now();
+  const double frame_ms =
+      s_has_prev ? std::chrono::duration<double, std::milli>(now - s_prev_tp).count() : busy_ms;
+  s_prev_tp = now;
+  s_has_prev = true;
+
+  const uint32_t frame_idx = s_total_frames++;
+  if (frame_idx < timeshift::telemetry::kWarmupFrames) {
+    timeshift::telemetry::ResetPerFrameCounters();
+    return;
+  }
+
+  timeshift::telemetry::PerfSample& dst = s_samples[s_sample_count++];
+  dst.frame_idx = frame_idx;
+  dst.frame_ms = frame_ms;
+  dst.render_busy_ms = busy_ms;
+  dst.gpu_ms =
+      double(timeshift::telemetry::g_frame_gpu_us.exchange(0, std::memory_order_relaxed)) / 1000.0;
+  dst.game_wait_ms =
+      double(timeshift::telemetry::g_frame_game_wait_us.exchange(0, std::memory_order_relaxed)) /
+      1000.0;
+  dst.draws =
+      timeshift::telemetry::g_telemetry_frame_draws.exchange(0, std::memory_order_relaxed);
+  dst.pipeline_binds =
+      timeshift::telemetry::g_frame_pipeline_binds.exchange(0, std::memory_order_relaxed);
+  dst.cmd_submits =
+      1u + timeshift::telemetry::g_frame_kicks.exchange(0, std::memory_order_relaxed);
+  dst.upload_bytes =
+      timeshift::telemetry::g_frame_upload_bytes.exchange(0, std::memory_order_relaxed);
+  dst.resolves_drawn =
+      timeshift::telemetry::g_frame_resolves_drawn.exchange(0, std::memory_order_relaxed);
+  dst.resolves_skipped =
+      timeshift::telemetry::g_frame_resolves_skipped.exchange(0, std::memory_order_relaxed);
+  dst.depth_only =
+      timeshift::telemetry::g_frame_depth_only.exchange(0, std::memory_order_relaxed);
+
+  if (s_sample_count == timeshift::telemetry::kWindowFrames) {
+    timeshift::telemetry::FlushPerfWindowCsv(s_samples, timeshift::telemetry::kWindowFrames);
+    s_sample_count = 0;
+  }
 }
 void OnGameThreadWait(double ms) {
-  (void)ms;
+  const uint64_t us = ms > 0.0 ? static_cast<uint64_t>(ms * 1000.0) : 0ULL;
+  timeshift::telemetry::g_frame_game_wait_us.fetch_add(us, std::memory_order_relaxed);
 }
 
 }  // namespace renut::frame_stats

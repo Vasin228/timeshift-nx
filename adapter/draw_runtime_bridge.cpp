@@ -2,6 +2,7 @@
 #include "render_drop_telemetry.h"
 #include "shader_runtime_bridge.h"
 #include "clear_rectangle.h"
+#include <atomic>
 #include <bit>
 #include <limits>
 #include <stdexcept>
@@ -9,6 +10,10 @@
 #include "renut_engine/gpu/guest/callbacks.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
+
+namespace timeshift::telemetry {
+std::atomic<uint32_t> g_telemetry_frame_draws{0};
+}
 
 namespace timeshift::renderer {
 using namespace renut::gpu;
@@ -39,11 +44,13 @@ void FlushPendingDraw(uint32_t device){
 }
 void DrawIndexed(uint32_t device,uint32_t primitive,int32_t base,uint32_t start,uint32_t count){
   RequireImmediateDevice(device);
+  timeshift::telemetry::g_telemetry_frame_draws.fetch_add(1, std::memory_order_relaxed);
   DrawCall call{};call.primitive=primitive;call.indexed=true;call.base_vertex=base;call.start_index=start;call.count=count;
   QueueDraw(device,call,0,0);
 }
 void DrawVerticesUP(uint32_t device,uint32_t primitive,uint32_t count,uint32_t data,uint32_t stride){
   RequireImmediateDevice(device);
+  timeshift::telemetry::g_telemetry_frame_draws.fetch_add(1, std::memory_order_relaxed);
   DrawCall call{};call.primitive=primitive;call.count=count;call.up_vertices=GuestPtr<const u8>(data);
   call.up_stride=stride;call.up_vertex_count=count;
   QueueDraw(device,call,Bytes(count,stride),0);
@@ -51,6 +58,7 @@ void DrawVerticesUP(uint32_t device,uint32_t primitive,uint32_t count,uint32_t d
 void DrawIndexedUP(uint32_t device,uint32_t primitive,uint32_t minimum,uint32_t vertices,uint32_t count,
                    uint32_t indices,uint32_t format,uint32_t data,uint32_t stride){
   RequireImmediateDevice(device);
+  timeshift::telemetry::g_telemetry_frame_draws.fetch_add(1, std::memory_order_relaxed);
   const uint64_t total=uint64_t(minimum)+vertices;
   if(total>std::numeric_limits<uint32_t>::max())throw std::overflow_error("TimeShift UP vertex range");
   DrawCall call{};call.primitive=primitive;call.indexed=true;call.count=count;
@@ -60,6 +68,7 @@ void DrawIndexedUP(uint32_t device,uint32_t primitive,uint32_t minimum,uint32_t 
 }
 void BeginVerticesCompleted(uint32_t device,uint32_t primitive,uint32_t count,uint32_t stride,uint32_t data){
   RequireImmediateDevice(device);
+  timeshift::telemetry::g_telemetry_frame_draws.fetch_add(1, std::memory_order_relaxed);
   DrawCall call{};call.primitive=primitive;call.count=count;call.up_stride=stride;call.up_vertex_count=count;
   call.up_vertices=GuestPtr<const u8>(data);
   QueueDeferredDraw(device,call,call.up_vertices,Bytes(count,stride));
@@ -67,6 +76,7 @@ void BeginVerticesCompleted(uint32_t device,uint32_t primitive,uint32_t count,ui
 void BeginIndexedCompleted(uint32_t device,uint32_t primitive,int32_t base,uint32_t vertices,uint32_t count,
                            uint32_t format,uint32_t stride,uint32_t data,uint32_t indices){
   RequireImmediateDevice(device);
+  timeshift::telemetry::g_telemetry_frame_draws.fetch_add(1, std::memory_order_relaxed);
   DrawCall call{};call.primitive=primitive;call.indexed=true;call.base_vertex=base;call.count=count;
   call.up_stride=stride;call.up_vertex_count=vertices;call.up_vertices=GuestPtr<const u8>(data);
   call.up_indices=GuestPtr<const u8>(indices);call.up_indices_32=(format&4)!=0;

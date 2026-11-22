@@ -12,10 +12,24 @@ If you have experience with low-level Switch development (deko3d, Nvidia Maxwell
 
 ---
 
+## Project Completion Status
+
+Overall Port Readiness: **`[███████░░░] 75%`**
+
+| Subsystem | Progress | Status |
+|---|---|---|
+| **Core, Memory, Saves & Controls** | `█████████░` **95%** | Static recompilation, 2.4 GB heap, saves/checkpoints, Joy-Con/Pro, time powers |
+| **Graphics & Shaders (`deko3d`)** | `████████░░` **85%** | `4,887` clean shaders, sharp mipmaps/POM (`GetTextureGradients`), zero glow/flicker; *missing fire/explosion soft particles* |
+| **Audio (`XMA2` / `audout`)** | `███████░░░` **75%** | Clean music/voices/ambient; *stutters during heavy multi-channel combat* |
+| **Performance (Switch Hardware)** | `████░░░░░░` **40%** | Playable at `~10-15 FPS` (`1280x720`); *needs GPU/render-thread & resolve optimization for `30 FPS`* |
+
+---
+
 ## What Works Right Now
 
 - **Static Recompilation:** Original Xbox 360 guest code compiled directly to 64-bit ARM (AArch64) for Horizon OS.
 - **Native Renderer:** Runs via Nintendo Switch native `deko3d` API (direct hardware access to Tegra X1 GPU).
+- **Sharp Textures & Clean Shaders:** Full `4,887`-shader single-pass cache (`0` offset collisions) + Xenos `GetTextureGradients` support restoring high-resolution mipmaps and Parallax Occlusion Mapping (`box_01`, walls, floors) with zero glowing or flickering objects.
 - **Save System & Checkpoints:** Fully implemented and working! Profile saves, new game autosaves, and in-game checkpoints are created and loaded properly on Horizon OS SD card storage (`sdmc:/switch/timeshift/user/`).
 - **Intro Cutscenes:** Bink Video playback works without audio/video glitches.
 - **UI & Menus:** Main menu, options, profile save/load, pause screen are all working.
@@ -35,17 +49,19 @@ If anyone decides to pick this up, here are the main remaining areas that need a
 
 ### 1. Performance / Framerate Optimization (~10-15 FPS)
 * **Symptom:** The game runs at approximately 10-15 FPS during gameplay on physical Switch hardware.
-* **Technical details:** Needs command list batching, reducing redundant pipeline switches, optimizing vertex/index buffer uploads, and profiling Tegra X1 GPU bottlenecks.
+* **Technical details:** Needs command list batching, reducing redundant pipeline switches, optimizing EDRAM resolves and vertex/index buffer uploads, and profiling Tegra X1 GPU bottlenecks.
 
-### 2. Audio Stuttering During Combat and Explosions
+### 2. Missing Fire, Campfire, Grenade & Explosion Effects
+* **Symptom:** Fire, campfires, smoke plumes, and grenade explosions do not appear visually.
+* **Technical details:** Saber3D soft-particle shaders sample a depth/EDRAM resolve alias (`format 23` over the `1280x720` target), which fails or clips particles on Switch (or is disabled when `VIDEO_UseSoftParticles = No`). Needs proper depth-resolve sampling / soft-particle pipeline support.
+* **Relevant files:** `upstream/sa2-nx/app/src/renut_engine/gpu/render/textures.cpp`, `upstream/sa2-nx/app/src/renut_engine/gpu/render/draw.cpp`.
+
+### 3. Audio Stuttering During Combat and Explosions
 * **Symptom:** Ambient music, footsteps, and quiet scenes sound clean. However, during heavy combat with grenade explosions and rapid gunfire, sound starts stuttering or causing frame hitches.
 * **Technical details:** XMA2 decoder (`private/sdk/src/audio/xma_decoder.cpp`). When multiple sound channels trigger simultaneously, the engine attempts to decode them synchronously inside the `AudioWorker` thread, exceeding the frame deadline. Needs asynchronous offloading to a worker thread on an idle core (Core 0 or Core 3).
 * **Relevant files:** `private/sdk/src/audio/xma_decoder.cpp`, `private/sdk/src/audio/audio_system.cpp`.
 
-### 3. Textures Stuck at Low LOD / Mipmap Levels
-* **Symptom:** Certain world and object textures (such as environment walls and crates) appear blurry or low-resolution up-close, displaying lower LOD/mip levels.
-* **Technical details:** Saber3D dynamic texture streaming packs mipmaps using Xbox 360 XGraphics tiling. Some textures need proper mip level chain resolution and contiguous mip page mapping so the engine streams full-resolution textures instead of low-detail LODs.
-* **Relevant files:** `upstream/sa2-nx/app/src/renut_engine/gpu/render/textures.cpp`, `upstream/sa2-nx/app/src/renut_engine/gpu/render/texture_layout.cpp`.
+*(Previously listed Issue "Textures Stuck at Low LOD / Mipmap Levels" & glowing/flickering objects were **RESOLVED** in Part 270 via `XenosRecomp` `GetTextureGradients` implementation and clean single-pass 4,887-shader cache rebuild.)*
 
 ---
 
@@ -66,8 +82,8 @@ timeshift-nx/
 |   |-- build_switch_app.py        # Links timeshift.nro
 |   |-- prepare_switch_cache.py    # Prepares shaders and assets
 |   `-- deploy_candidate.py        # Deploys to Switch via FTP
-|-- MODLOG.md             # Development chronicle (Parts 1-245)
-|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (4,283 shaders)
+|-- MODLOG.md             # Development chronicle (Parts 266-270; earlier in archives)
+|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (5,772 records)
 `-- timeshift.toml        # Game configuration file for Switch
 ```
 

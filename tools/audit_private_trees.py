@@ -8,9 +8,9 @@ verify_and_apply(False)
 profile=json.loads((ROOT/'adapter/fence_read_profile.json').read_text())
 managed={e['file']:e['sha256'] for e in profile['private_app_files']}
 managed.update({
-    'generated/default/timeshift_funcs.h': 'e73c2b0eae53d48ac3a19bf3d106b12c07e95d91e0e86efa062c8128bed46beb',
-    'generated/default/timeshift_init.cpp': 'dd79cda909f08b43087f28b884ef6a450f539af01b5be1e1010e0764265f0fb0',
-    'generated/default/timeshift_register.cpp': 'fb0bcab1a878161ac3f2aee5461434ffa21f67724a48d098dca5751f31a7df68',
+    'generated/default/timeshift_funcs.h': '101f678d8726200914bb4323f1fed60afe43bb79a378d9f9bf824081b18b0406',
+    'generated/default/timeshift_init.cpp': '63abd75b5b571ab91103ac2c7494fbc416d15ca90c4cc4a2456898124ebe4581',
+    'generated/default/timeshift_register.cpp': '6d2fa8961ffabdc248a43ae52074c3763c1f6f104f7a98c01f8eaa5367bcfd9c',
 })
 
 sdk_managed = {

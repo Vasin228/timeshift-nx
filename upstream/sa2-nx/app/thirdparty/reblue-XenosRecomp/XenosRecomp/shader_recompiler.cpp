@@ -515,6 +515,48 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         println("lod = r{}.{};", instr.srcRegister, SWIZZLES[instr.srcSwizzle & 0x3]);
         return;
     }
+
+    // getGradients computes screen-space coarse derivatives of src.xy without sampling a texture:
+    //   .x = ddx_coarse(src.x), .y = ddy_coarse(src.x),
+    //   .z = ddx_coarse(src.y), .w = ddy_coarse(src.y)
+    if (instr.opcode == FetchOpcode::GetTextureGradients && isPixelShader)
+    {
+        if (instr.isPredicated)
+        {
+            indent();
+            println("if ({}p0)", instr.predCondition ? "" : "!");
+            indent();
+            out += "{\n";
+            ++indentation;
+        }
+        bool has_xyzw = false;
+        for (size_t i = 0; i < 4; i++)
+        {
+            const auto swz = getDestSwizzle(instr.dstSwizzle, i);
+            if (swz >= FetchDestinationSwizzle::X && swz <= FetchDestinationSwizzle::W)
+                has_xyzw = true;
+        }
+        if (has_xyzw)
+        {
+            const char sx = SWIZZLES[instr.srcSwizzle & 0x3];
+            const char sy = SWIZZLES[(instr.srcSwizzle >> 2) & 0x3];
+            indent();
+            print("r{}.", instr.dstRegister);
+            printDstSwizzle(instr.dstSwizzle, false);
+            print(" = float4(ddx_coarse(r{0}.{1}), ddy_coarse(r{0}.{1}), ddx_coarse(r{0}.{2}), ddy_coarse(r{0}.{2})).",
+                  instr.srcRegister, sx, sy);
+            printDstSwizzle(instr.dstSwizzle, true);
+            out += ";\n";
+        }
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+        if (instr.isPredicated)
+        {
+            --indentation;
+            indent();
+            out += "}\n";
+        }
+        return;
+    }
 #endif
 
     if (instr.opcode != FetchOpcode::TextureFetch && instr.opcode != FetchOpcode::GetTextureWeights

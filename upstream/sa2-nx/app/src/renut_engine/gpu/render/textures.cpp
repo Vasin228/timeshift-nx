@@ -327,7 +327,11 @@ bool ExtentClean(HostTexture &t, uint64_t proven) {
 // the cards prove the bytes unchanged since: then the bytes are those hashed, and so would the hash be.
 uint64_t CheckedHash(const TextureFetch &fetch, HostTexture &t, bool sampled) {
   KnowGuestExtent(fetch, t);
+#if defined(TIMESHIFT_RECOMP)
+  constexpr bool cards = false;
+#else
   const bool cards = banjo::renut_gpu::StoreCardsOn();
+#endif
   if (cards && ExtentClean(t, t.hash_interval)) {
     t.hash_interval = CardsInterval();
     // The bytes the hash would have read: all of a linear texture; SampleHash's ends and spans of a tiled one.
@@ -563,9 +567,9 @@ bool Create(HostTexture &t, const TextureFetch &fetch, bool render_target,
   const u32 pow2_h = 1u << (border + (32 - u32(std::countl_zero(std::max(1u, height - 2 * border - 1)))));
   const bool packed_base = fetch.PackedMips() && (pow2_w <= 16 || pow2_h <= 16);
   const u32 max_mip_level = fetch.MaxMipLevel();
-  const bool has_mips = (fetch.MipPage() != 0 || fetch.PackedMips());
+  const bool has_mips = (fetch.MipPage() != 0) || packed_base || (fetch.PackedMips() && max_mip_level > 0);
   const u32 target_levels = max_mip_level > 0 ? std::min(max_mip_level + 1, size_levels) : size_levels;
-  t.mip_levels = (render_target || !has_mips) ? 1 : target_levels;
+  t.mip_levels = (render_target || !has_mips || target_levels <= 1) ? 1 : target_levels;
   if (!render_target && fetch.Dimension() == TextureDimension::Tex2D) {
     static uint32_t mip_diagnostics = 0;
     if (mip_diagnostics < 200) {
@@ -759,16 +763,18 @@ HostTexture *DepthWordsSource(const TextureFetch &fetch) {
 // format, size and one level, sampled through its own view's description with the fetch's swizzle.
 uint32_t WordsViewSlot(HostTexture &t, HostTexture &source, u32 swizzle) {
   if (!banjo::renut_gpu::DepthWordsViewOn() || !source.words || !source.words->texture ||
-      t.host_format != kDepthResolveWordsFormat || t.dimension != TextureDimension::Tex2D || t.stacked ||
+      (t.host_format != kDepthResolveWordsFormat && &t != &source) ||
+      t.dimension != TextureDimension::Tex2D || t.stacked ||
       t.mip_levels != 1 || t.alloc_width != source.words->alloc_width || t.alloc_height != source.words->alloc_height)
     return UINT32_MAX;
   for (const HostTexture::WordsView &v : source.words_views) {
     if (v.swizzle == swizzle)
       return v.slot;
   }
-  plume::RenderTextureViewDesc desc = t.view_desc;
+  plume::RenderTextureViewDesc desc = plume::RenderTextureViewDesc::Texture2D(kDepthResolveWordsFormat);
   desc.mipLevels = 1;
-  desc.componentMapping = SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format);
+  const bool swap_rb = (&t == &source) ? false : t.view_swap_red_blue;
+  desc.componentMapping = SwizzleMapping(swizzle, swap_rb, kDepthResolveWordsFormat);
   HostTexture::WordsView v;
   v.swizzle = swizzle;
   v.view = source.words->texture->createTextureView(desc);
@@ -935,8 +941,12 @@ void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
     // banjo-nx (2026-10-19, render-thread proposal 1): not uploaded again while the cards prove no page written since
     // the last upload read it (the GPU's copy holds those bytes).
     KnowGuestExtent(fetch, t);
-    if (banjo::renut_gpu::StoreCardsOn() && !banjo::renut_gpu::StoreCardsVerifyOn() &&
-        ExtentClean(t, t.read_interval)) {
+#if defined(TIMESHIFT_RECOMP)
+    constexpr bool use_cards = false;
+#else
+    const bool use_cards = banjo::renut_gpu::StoreCardsOn() && !banjo::renut_gpu::StoreCardsVerifyOn();
+#endif
+    if (use_cards && ExtentClean(t, t.read_interval)) {
       banjo::renut_gpu::CountTextureCards(uint64_t(t.sample_sizes[0]) + t.sample_sizes[1], 2);
     } else {
       t.uploaded = Upload(t, fetch, true);
@@ -1134,43 +1144,78 @@ void TransitionTextureLocked(HostTexture *texture, plume::RenderTextureLayout la
   texture->layout = layout;
 }
 
+inline u32 SyntheticTextureVa(const TextureFetch &fetch) {
+  const u32 page = fetch.BasePage() ? fetch.BasePage() : fetch.MipPage();
+  const u32 mip_only_bit = (fetch.BasePage() == 0 && fetch.MipPage() != 0) ? 0x2u : 0x0u;
+  return 0x80000001u | (page << 12) | ((u32(fetch.Format()) & 0x3Fu) << 2) | mip_only_bit;
+}
+
 TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetch, BindEffects *fx) {
   TextureBinding binding;
   binding.dimension = HostDimension(device_fetch);
   binding.slot = NullSlot(binding.dimension);
-  if (!texture_va)
+  const bool device_has_pages = device_fetch.IsTexture() &&
+                                (device_fetch.BasePage() != 0 || device_fetch.MipPage() != 0);
+  if (!texture_va && !device_has_pages)
     return binding;
-  const auto *header = GuestPtr<const d3d::BaseTexture>(texture_va);
-  if (!header)
-    return binding;
-  TextureFetch fetch = TextureFetch::FromHeader(header->Format);
+
+  const u32 orig_va = texture_va;
+  TextureFetch fetch;
+  u32 effective_va = texture_va;
+  if (texture_va) {
+    const auto *header = GuestPtr<const d3d::BaseTexture>(texture_va);
+    if (!header) {
+      if (!device_has_pages)
+        return binding;
+      fetch = device_fetch;
+      effective_va = SyntheticTextureVa(fetch);
+    } else {
+      fetch = TextureFetch::FromHeader(header->Format);
 #if defined(TIMESHIFT_RECOMP)
-  // TimeShift uses dynamic streaming where header->Format updates legitimate BasePage & mips during gameplay.
-  // Protect all GPU-written / resolved surfaces (including alias headers not in g_textures) and reject
-  // overwritten stack temporaries whose format, size, or swizzle no longer match device_fetch.
-  const HostTexture *existing = FindHostTextureLocked(texture_va);
-  const bool device_is_gpu_target =
-      (existing && existing->gpu_written) ||
-      g_resolve_targets.contains(device_fetch.BasePage()) ||
-      g_depth_words.contains(device_fetch.BasePage());
-  const bool same_shape_and_swizzle =
-      fetch.IsTexture() &&
-      ((fetch.dword[1] & 0xFFFu) == (device_fetch.dword[1] & 0xFFFu)) &&
-      (fetch.dword[2] == device_fetch.dword[2]) &&
-      ((fetch.dword[3] & 0x0007FFFFu) == (device_fetch.dword[3] & 0x0007FFFFu)) &&
-      ((fetch.dword[5] & 0x600u) == (device_fetch.dword[5] & 0x600u));
-  if (!same_shape_and_swizzle || device_is_gpu_target) {
-    fetch = device_fetch;
-  }
+      const HostTexture *existing = FindHostTextureLocked(texture_va);
+      const bool device_is_gpu_target =
+          device_fetch.BasePage() != 0 &&
+          (g_resolve_targets.contains(device_fetch.BasePage()) ||
+           g_depth_words.contains(device_fetch.BasePage()));
+      const bool header_is_gpu_target =
+          (existing && existing->gpu_written) ||
+          (fetch.BasePage() != 0 &&
+           (g_resolve_targets.contains(fetch.BasePage()) ||
+            g_depth_words.contains(fetch.BasePage())));
+      // Match either identical BasePage, or an in-place streaming update where BasePage was 0
+      // at SetTexture time and MipPage matches.
+      const bool same_pages =
+          (fetch.BasePage() == device_fetch.BasePage() && fetch.BasePage() != 0) ||
+          (fetch.MipPage() != 0 && fetch.MipPage() == device_fetch.MipPage() &&
+           device_fetch.BasePage() == 0);
+      const bool same_shape_and_swizzle =
+          fetch.IsTexture() && same_pages &&
+          ((fetch.dword[1] & 0xFFFu) == (device_fetch.dword[1] & 0xFFFu)) &&
+          ((fetch.dword[3] & 0x0007FFFFu) == (device_fetch.dword[3] & 0x0007FFFFu)) &&
+          ((fetch.dword[5] & 0x600u) == (device_fetch.dword[5] & 0x600u));
+      if (!same_shape_and_swizzle) {
+        // Stale m_Textures[r] pointer or overwritten stack header: use device_fetch AND
+        // switch effective_va so we NEVER clobber or retire g_textures[texture_va]!
+        if (!device_has_pages)
+          return binding;
+        fetch = device_fetch;
+        effective_va = SyntheticTextureVa(fetch);
+      } else if (device_is_gpu_target || header_is_gpu_target) {
+        fetch = device_fetch;
+      }
 #else
-  // SetTexture copied the header into the device's fetch constant. A header
-  // that no longer matches it was a temporary the game has overwritten since
-  // (a command buffer runs after its recording thread's stack moved on); the
-  // device's copy is what the GPU reads.
-  if (!fetch.IsTexture() || fetch.BasePage() != device_fetch.BasePage())
-    fetch = device_fetch;
+      if (!fetch.IsTexture() || fetch.BasePage() != device_fetch.BasePage())
+        fetch = device_fetch;
 #endif
-  if (!fetch.IsTexture())
+    }
+  } else {
+    if (!device_has_pages)
+      return binding;
+    fetch = device_fetch;
+    effective_va = SyntheticTextureVa(fetch);
+  }
+  texture_va = effective_va;
+  if (!fetch.IsTexture() || (fetch.BasePage() == 0 && fetch.MipPage() == 0))
     return binding;
 
   u32 desc[6];
@@ -1929,34 +1974,46 @@ uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale, b
   desc.addressW = address(fetch.Address(2));
   desc.magFilter = filter(fetch.MagFilter());
   desc.minFilter = filter(fetch.MinFilter());
-  // MaxAnisotropy stores 2..5 for ratios 2:1..16:1 (its table at 0x82003E38).
-  const uint32_t aniso = fetch.Anisotropy();
-  desc.anisotropyEnabled = aniso > 1 && aniso <= 5;
-  desc.maxAnisotropy = desc.anisotropyEnabled ? (1u << (aniso - 1)) : 1;
   const uint32_t max_mip_level = fetch.MaxMipLevel();
   const bool effective_has_mips = has_physical_mips;
-  const uint32_t effective_max_mip = (!effective_has_mips || fetch.MipFilter() == TextureFilter::BaseMap)
-                                         ? 0
-                                         : (max_mip_level > 0 ? max_mip_level : 15u);
-  if (effective_max_mip == 0) {
+  const uint32_t highest_mip = !effective_has_mips ? 0u : (max_mip_level > 0 ? max_mip_level : 15u);
+  // When BasePage == 0 and MipPage != 0, level 0 is not resident in GPU memory (minimum valid level is >= 1).
+  // Also honor fetch.MinMipLevel() when mips are present so unstreamed base mips are not sampled.
+  const uint32_t requested_min_mip =
+      !effective_has_mips ? 0u
+      : (fetch.BasePage() == 0 && fetch.MipPage() != 0) ? std::max(1u, fetch.MinMipLevel())
+      : (fetch.MipPage() != 0 || fetch.PackedMips())    ? fetch.MinMipLevel()
+                                                        : 0u;
+  const uint32_t min_mip_level = std::min(requested_min_mip, highest_mip);
+  // On Xenos, MipFilter == BaseMap clamps LOD to MinMipLevel (not level 0 when MinMipLevel > 0).
+  const uint32_t effective_max_mip =
+      (!effective_has_mips || fetch.MipFilter() == TextureFilter::BaseMap) ? min_mip_level : highest_mip;
+
+  if (effective_max_mip == 0 && min_mip_level == 0) {
     desc.mipmapMode = plume::RenderMipmapMode::UNKNOWN;
+    desc.minLOD = 0.0f;
+    desc.maxLOD = 0.0f;
+    desc.anisotropyEnabled = false;
+    desc.maxAnisotropy = 1;
   } else {
-    desc.mipmapMode = fetch.MipFilter() == TextureFilter::Point ? plume::RenderMipmapMode::NEAREST
-                                                                : plume::RenderMipmapMode::LINEAR;
+    desc.mipmapMode = (fetch.MipFilter() == TextureFilter::Point ||
+                       fetch.MipFilter() == TextureFilter::BaseMap)
+                          ? plume::RenderMipmapMode::NEAREST
+                          : plume::RenderMipmapMode::LINEAR;
+    // MaxAnisotropy stores 2..5 for ratios 2:1..16:1 (its table at 0x82003E38).
+    const uint32_t aniso = fetch.Anisotropy();
+    const uint32_t min_anisotropy = std::max(MinAnisotropy(), 16u);
+    const uint32_t guest_aniso = (aniso > 1 && aniso <= 5) ? (1u << (aniso - 1)) : 1u;
+    const uint32_t max_aniso = std::max(min_anisotropy, guest_aniso);
+    desc.anisotropyEnabled = (max_aniso > 1) && (effective_max_mip > min_mip_level);
+    desc.maxAnisotropy = desc.anisotropyEnabled ? std::min<uint32_t>(max_aniso, 16u) : 1;
+    if (desc.anisotropyEnabled) {
+      desc.minFilter = plume::RenderFilter::LINEAR;
+      desc.magFilter = plume::RenderFilter::LINEAR;
+    }
+    desc.minLOD = float(min_mip_level);
+    desc.maxLOD = float(effective_max_mip);
   }
-  const uint32_t min_anisotropy = std::max(MinAnisotropy(), 16u);
-  if (min_anisotropy > desc.maxAnisotropy &&
-      fetch.MipFilter() != TextureFilter::BaseMap && effective_has_mips && effective_max_mip > 0) {
-    desc.anisotropyEnabled = true;
-    desc.maxAnisotropy = min_anisotropy;
-    desc.minFilter = plume::RenderFilter::LINEAR;
-    desc.magFilter = plume::RenderFilter::LINEAR;
-  }
-  const uint32_t min_mip_level = (effective_has_mips && fetch.BasePage() == 0 && fetch.MipPage() != 0)
-                                     ? std::min(std::max(1u, fetch.MinMipLevel()), effective_max_mip)
-                                     : 0u;
-  desc.minLOD = float(min_mip_level);
-  desc.maxLOD = float(effective_max_mip);
 
   // Explicit 10-bit signed extension for Xenos LodBias (dword[4] bits 12..21, S5.5 format)
   const int32_t raw_bias = (int32_t(fetch.dword[4] << 10) >> 22);

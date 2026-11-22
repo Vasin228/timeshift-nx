@@ -179,8 +179,9 @@ TextureLevelLayout GetTextureLevelLayout(const TextureFetch &fetch, u32 level) {
       dimension == TextureDimension::Tex3D ? 1u << (border + CeilLog2(depth - 2 * border)) : 1u;
   const bool packed_base = fetch.PackedMips() && (pow2_width <= 16 || pow2_height <= 16);
 
+  const bool is_contiguous = (fetch.MipPage() == 0);
   TextureLevelLayout out;
-  out.page = (level == 0 || packed_base || fetch.MipPage() == 0) ? fetch.BasePage() : fetch.MipPage();
+  out.page = (level == 0 || packed_base || is_contiguous) ? fetch.BasePage() : fetch.MipPage();
   if (level == 0 && !packed_base) {
     u32 w = width, h = height, d = dimension == TextureDimension::Tex3D ? depth : 1;
     AlignTextureDimensions(w, h, d, bpp, format, dimension, tiled);
@@ -228,7 +229,14 @@ TextureLevelLayout GetTextureLevelLayout(const TextureFetch &fetch, u32 level) {
       offset += bytes * slices;
     --remaining;
   }
-  out.offset = offset;
+  if (is_contiguous && !packed_base) {
+    // Contiguous layout: Level > 0 starts after aligned Base level
+    const TextureLevelLayout base = GetTextureLevelLayout(fetch, 0);
+    const u32 base_bytes = LevelBytes(base, dimension, bpp) * slices;
+    out.offset = base_bytes + offset;
+  } else {
+    out.offset = offset;
+  }
   out.slice_bytes = Align4K(((out.pitch_texels * bpp) >> 3) * out.height);
   return out;
 }
