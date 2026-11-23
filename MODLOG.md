@@ -146,3 +146,37 @@ Earlier entry: [Part187](MODLOG_ARCHIVE_187.md).
   - **Live Playtest (`city_part01`)**: Main Menu, intro cutscene, Room 1, Room 2 (`box_01` "DANGER" crates, `SB-T118a` generators, boardwalks, pipes, torn plaster, fusebox, archway corridor, stairwell) all render with sharp POM/mipmap detail and **0 glowing/disappearing/flickering objects**; the kneeling soldier at the `CAUTION` crate now renders with normal dark leather boots, belt, and grey knit cap.
   - **Clean Log Audit (`9,908` lines / `1,026,623` B, `45,180` swaps)**: `0` `[error]`, `0` `TSDBG missing guest function`, `0` missing/fallback shaders, `0` crashes/faults.
 - **Next**: User playtesting outdoors/late chapters (`city_part01` street onward) and reviewing `perf_baseline.csv` metrics for FPS tuning if needed.
+
+## 2026-11-23 (Part 271) — EDRAM 4xMSAA Soft-Particle Aliasing Fix (Fire/Explosions) + Custom NRO Icon & Author (`vasin228`)
+- **Root Cause Isolated (Low-Res Soft Particles / Fire / Explosions)**:
+  - Guest PPC disassembly (`sub_82184908`, `sub_82185440` `BeginLowRes`, `sub_821855C0` `EndLowRes`, `sub_821C8C90`) proved TimeShift renders main color/depth (`2236`/`2240`) at `1280x720 1x` and low-res soft-particle color/depth (`2276`/`2280`) at `640x360 4xMSAA` sharing the same EDRAM base tiles (`0` / `r30`).
+  - Because `SampleCount()` forces `COUNT_1` on `TIMESHIFT_RECOMP` while `TargetKey()` keyed on raw `SurfaceInfo` pitch (`640` vs `1280`) and MSAA bits (`2` vs `0`), `2276`/`2280` created orphaned `640x360` host targets, discarding all fire/smoke/grenade/explosion draws (`part_mega_pak`, `PS 0F4077C8FF4A44C6`) when `EndLowRes` switched back to `2236`.
+- **Fixes Applied & Mirrored (`timeshift-nx` & `timeshift-renut`)**:
+  - `upstream/sa2-nx/app/src/renut_engine/gpu/render/surfaces.cpp` (SHA-256 `AD8AB27B4967F6720A8A2741363A58F63B1FD2648D638B73C2E8F9ABA4929341`): Added `EdramMsaaScale()` and updated `TargetKey()`, `BuildTarget()`, and `GetHostSurfaceSlow()` under `#if defined(TIMESHIFT_RECOMP)` so 2x/4x MSAA EDRAM views alias the `COUNT_1` sample-space target (`1280x720`).
+  - `upstream/sa2-nx/app/src/renut_engine/gpu/render/draw.cpp`: Added `msaa_scale_x`/`msaa_scale_y` handling across `Targets`, `GatherTargets()`, `ComputeViewport()`, `ComputeViewportSlow()`, `ViewportReuse`, `SameTargets()`, `DrawStateLocked()` (`sc.resolution_scale` scaled by `msaa_scale_x`, plus `!ps_writes_depth` guard via `kShaderFlagPixelDepth` preserving `targets.depth` when pixel shaders write depth), and `ClearStateLocked()`.
+  - `assets/icon.jpg`: Custom Beta Suit chrono-ring icon (`256x256` RGB baseline JPEG, `SOF0=True`, `SOF2=False`, `24,973` B, SHA-256 `74DB982218ECA68E50897DBE4D60FDD24F2A92D50A7B807C4F052636CD9462F6`).
+  - `tools/build_switch_app.py`: Generates `build/app-switch/timeshift.nacp` via `nacptool --create "TimeShift" "vasin228" "1.0.0"` and packages `timeshift.nro` with `--nacp` and `--icon=assets/icon.jpg`.
+- **Build, Audits & Deployment (`192.168.0.7:4150`)**:
+  - `ninja` + `build_switch_app.py` exit `0` (`220` AArch64 objects, `26/26` TimeShift hooks, `0` foreign hooks).
+  - `verify_nro.py` PASS (`Embedded Icon: 24,973 bytes` matches `assets/icon.jpg`; `NACP Title='TimeShift', Author='vasin228', Version='1.0.0'`); `audit_private_trees.py` PASS; `check_profile.py` PASS.
+  - `build/app-switch/timeshift.elf`: `2026-11-23 02:53:03`, `545,558,384` B, SHA-256 `6E7A55353B8B775A97512BBA3771BEC2D8402B37EFA360D7BE1D75DFAC258005`.
+  - `build/app-switch/timeshift.nro`: `2026-11-23 02:53:06`, `91,263,429` B, SHA-256 `B5CC9EE8F44030C96BF5423628BC6850C9F3A7D68BE7A93E6EF94D59C83E4D56`.
+  - Uploaded `/switch/timeshift/timeshift.nro` via `sys-autopilot` (`HTTP 201`, `91,263,429` B, `100%`, remote SHA-256 exact match). Game intentionally not auto-launched per user instruction.
+- **Next**: User manual verification via **Hold R Title Override** for `hbmenu` icon/author (`vasin228`) and in-game fire/campfires/grenades/explosions (`VIDEO_UseSoftParticles = Yes`).
+
+## 2026-11-23 (Part 272) — Fix 2x Zoomed/Shifted Camera on Tiled 4xMSAA Main Scene While Preserving Aliased 640x360 Soft Particles
+- **Root Cause Isolated (Switch Screenshot + `default_image.bin` Preset 4 Disassembly)**:
+  - Live user screenshot confirmed Part 271 restored explosion smoke/flash/debris particles with proper depth occlusion and intact `1x` HUD, but zoomed the 3D scene camera ~2x into the top-left quadrant (pushing the player weapon viewmodel off the bottom-right).
+  - Inspecting `default_image.bin` (`0x82B28188`, active preset index `0x82B288E0 = 4`), `sub_82184908`, `sub_82184E30`, and Switch GPU memory telemetry (`8 RTs / 33 MB` in Part 270 -> `6 RTs / 41 MB` in Part 271) proved TimeShift renders the main 3D scene into **Predicated Tiling Preset 4** (`1280x256` 4xMSAA, `msaa=2`, `pitch=1280`, 3 horizontal tiles spanning `1280x720`).
+  - Part 271 applied `EdramMsaaScale` (`2x2`) unconditionally to every `msaa != 0` surface, expanding Preset 4 to `2560x720` (`+11 MB`), scaling its `1280x720` viewport to `2560x1440`, and causing `EndTiling` to resolve only the top-left `(0,0)-(1280,720)` quadrant into the `1280x720` scene texture.
+- **Fixes Applied & Mirrored (`timeshift-nx` & `timeshift-renut`)**:
+  - `upstream/sa2-nx/app/src/renut_engine/gpu/render/surfaces.h` (SHA-256 `F929F3408476FC8AFD8CD53F2A25150A15A6DF554509A53CA3004C1CCC4C6839`): Added `HostSurface::target_msaa` recording the backing EDRAM target's native MSAA mode at `BuildTarget()`.
+  - `upstream/sa2-nx/app/src/renut_engine/gpu/render/surfaces.cpp` (SHA-256 `ED421898B0399A804AD64EF3125D4EA4745FEE9F3EB5EB41C87A65F64D94B337`): Restored upstream `TargetKey()` and logical `surface.width`/`height` sizing (keeping tiled Preset 4 at `1280x720` 1:1); in `GetHostSurfaceSlow()` under `#if defined(TIMESHIFT_RECOMP)`, alias an untiled (`!g_tiling_width && !g_tiling_height`) 2x/4x MSAA view (`2276`/`2280` `640x360`) onto an existing `1x` target (`2236`/`2240` `1280x720`) only when matching base + sample-space pitch exists and already covers `SurfaceWidth * msaa_x` by `SurfaceHeight * msaa_y`.
+  - `upstream/sa2-nx/app/src/renut_engine/gpu/render/draw.cpp` (SHA-256 `D79C34B6C705B2DAFF3D03A298F89EBD9EDD4FF225B9D7527FDABD12EB055ED2`): Restricted `GatherTargets()` `msaa_scale_x`/`msaa_scale_y` scaling strictly to `first->target_msaa == 0 && msaa != 0` so standalone MSAA targets (`Preset 4`) render 1:1 while aliased soft particles (`2276`/`2280`) still scale `2x2` onto the `1280x720` target.
+- **Build, Audits & Deployment (`192.168.0.7:4150`)**:
+  - `ninja` + `build_switch_app.py` exit `0` (`220` AArch64 objects, `26/26` TimeShift hooks, `0` foreign hooks).
+  - `verify_nro.py` PASS (`NACP Title='TimeShift', Author='vasin228', Version='1.0.0'`, embedded icon matches `assets/icon.jpg`); `audit_private_trees.py` PASS; `check_profile.py` PASS.
+  - `build/app-switch/timeshift.elf`: `2026-11-23 05:26:57`, `545,565,192` B, SHA-256 `08FB6577D06522B2F1BE0221F80BBA2BEC97DCDF823C096A9E00C0A9D3D27AD2`.
+  - `build/app-switch/timeshift.nro`: `2026-11-23 05:27:01`, `91,263,429` B, SHA-256 `CDECE0E7DF957C664D85EF85B70DDD7D4951B21AC0287D8D0093E94774163142`.
+  - Uploaded `/switch/timeshift/timeshift.nro` via `sys-autopilot` (`HTTP 201`, `91,263,429` B in `33.84s`, `100%`, remote SHA-256 `match=True`). Game intentionally not launched per user instruction.
+- **Next**: User manual playtest via **Hold R Title Override** confirming normal 1:1 camera + weapon framing alongside working soft-particle fire/explosions and `hbmenu` icon/author (`vasin228`).

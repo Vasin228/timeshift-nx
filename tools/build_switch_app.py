@@ -22,9 +22,15 @@ os.environ['DEVKITA64'] = str(DEVKITPRO / 'devkitA64')
 AARCH64_CXX = DEVKITPRO / 'devkitA64/bin/aarch64-none-elf-g++'
 AARCH64_NM = DEVKITPRO / 'devkitA64/bin/aarch64-none-elf-nm'
 ELF2NRO = DEVKITPRO / 'tools/bin/elf2nro'
+NACPTOOL = DEVKITPRO / 'tools/bin/nacptool'
 
 DEFAULT_NACB = Path('/root/lab/switch-build-app/timeshift_nro.default.nacp')
 DEFAULT_ICON = DEVKITPRO / 'libnx/default_icon.jpg'
+APP_NACP = BUILD_APP / 'timeshift.nacp'
+APP_ICON = ROOT / 'assets/icon.jpg'
+NRO_TITLE = 'TimeShift'
+NRO_AUTHOR = 'vasin228'
+NRO_VERSION = '1.0.0'
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -254,14 +260,23 @@ def link_candidate(objects):
         sys.exit(1)
     print(f"Linked timeshift.elf in {time.time() - t0:.2f}s ({elf_path.stat().st_size:,} bytes)")
 
-    # elf2nro
-    print("Packaging timeshift.nro via elf2nro...")
+    # nacptool + elf2nro
+    nacp_cmd = [str(NACPTOOL), '--create', NRO_TITLE, NRO_AUTHOR, NRO_VERSION, str(APP_NACP)]
+    print(f"Generating {APP_NACP.name} (title={NRO_TITLE!r}, author={NRO_AUTHOR!r}, version={NRO_VERSION!r})...")
+    nacp_res = subprocess.run(nacp_cmd, capture_output=True, text=True)
+    if nacp_res.returncode != 0 or not APP_NACP.exists():
+        print("nacptool failed!", file=sys.stderr)
+        print(nacp_res.stderr, file=sys.stderr)
+        sys.exit(1)
+
+    icon_path = APP_ICON if APP_ICON.exists() else DEFAULT_ICON
+    print(f"Packaging timeshift.nro via elf2nro (icon={icon_path})...")
     nro_cmd = [
         str(ELF2NRO),
         str(elf_path),
         str(nro_path),
-        f'--nacp={DEFAULT_NACB}',
-        f'--icon={DEFAULT_ICON}',
+        f'--nacp={APP_NACP}',
+        f'--icon={icon_path}',
     ]
     res = subprocess.run(nro_cmd, capture_output=True, text=True)
     if res.returncode != 0:

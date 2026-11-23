@@ -59,6 +59,7 @@ struct HostSurface {
   u32 size_word = 0;
   u32 info_word = 0;
   u32 format_word = 0;
+  u32 target_msaa = 0;  // native MSAA mode of the backing EDRAM target when built
 
   // In guest pixels; the host target is 'scale' times that on each axis
   // (ResolutionScale when it was built).

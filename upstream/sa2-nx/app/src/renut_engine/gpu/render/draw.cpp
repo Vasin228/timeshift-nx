@@ -1163,6 +1163,7 @@ struct Targets {
   // The size the guest surface header gives; smaller than width x height for
   // a target grown for tiling (SetTilingExtentLocked).
   uint32_t guest_width = 0, guest_height = 0;
+  uint32_t msaa_scale_x = 1, msaa_scale_y = 1;
 };
 
 // banjo-nx (2026-10-19, banjo_deko3d_depth_handover; "Depth hand-over" below): the targets of the draw whose textures
@@ -1212,6 +1213,13 @@ bool GatherTargets(const GuestDevice &device, Targets &t) {
   }
   t.guest_width = d3d::SurfaceWidth(first->size_word);
   t.guest_height = d3d::SurfaceHeight(first->size_word);
+#if defined(TIMESHIFT_RECOMP)
+  const u32 msaa = (first->info_word >> 16) & 3u;
+  if (first->target_msaa == 0 && msaa != 0) {
+    t.msaa_scale_x = (msaa >= 2u) ? 2u : 1u;
+    t.msaa_scale_y = (msaa >= 1u) ? 2u : 1u;
+  }
+#endif
   // sa2-nx (2026-10-20, diagnostic): a depth target smaller than the colour targets. The draw area and scissor follow
   // the first colour target; a pixel past the depth target's edge is undefined on D3D12 and a "ZT width violation"
   // GPU exception on Maxwell (the PC's GPU reset at 04:45 with it, from some process). Counted for the report.
@@ -1413,7 +1421,7 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
   key[19] = t.guest_width;
   key[20] = t.guest_height;
   key[21] = t.scale.code;
-  key[22] = 0;
+  key[22] = t.msaa_scale_x | (t.msaa_scale_y << 4);
   key[23] = 0;
   static u32 last_key[24];
   static ViewportState last;
@@ -1468,6 +1476,8 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
   yo += float(ty);
 
   ViewportState vs;
+  const uint32_t logical_w = std::max(1u, t.width / t.msaa_scale_x);
+  const uint32_t logical_h = std::max(1u, t.height / t.msaa_scale_y);
   const float min_z = std::clamp(zo, 0.0f, 1.0f), max_z = std::clamp(zo + zs, 0.0f, 1.0f);
   // banjo-nx (2026-10-18, banjo_renut_half_pixel_offset): PA_SU_VTX_CNTL.pix_center (device 0x29C0 bit 0, which
   // D3DRS_HALFPIXELOFFSET sets) 0 puts the pixel centres at integer window coordinates (D3D9's), so the GPU's window
@@ -1488,7 +1498,7 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
     vs.viewport = plume::RenderViewport(xo + pixel_center - xs, yo + pixel_center + ys, 2.0f * xs, -2.0f * ys,
                                         min_z, max_z);
   } else {
-    vs.viewport = plume::RenderViewport(0.0f, 0.0f, float(t.width), float(t.height), min_z, max_z);
+    vs.viewport = plume::RenderViewport(0.0f, 0.0f, float(logical_w), float(logical_h), min_z, max_z);
     vs.screen_scale[0] = xs;
     vs.screen_scale[1] = ys;
     vs.screen_offset[0] = xo + pixel_center;
@@ -1504,11 +1514,11 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
   // surface, and the GPU applies it per tile in window coordinates, so across
   // the tiles that bound covers the whole target (a one-tile draw is cut to
   // its tile below; one in tile coordinates has the bound offset there).
-  if (!tile_local && t.guest_width && t.width > t.guest_width && sx2 >= int32_t(t.guest_width))
-    sx2 = int32_t(t.width);
-  if (!tile_local && t.guest_height && t.height > t.guest_height &&
+  if (!tile_local && t.guest_width && logical_w > t.guest_width && sx2 >= int32_t(t.guest_width))
+    sx2 = int32_t(logical_w);
+  if (!tile_local && t.guest_height && logical_h > t.guest_height &&
       sy2 >= int32_t(t.guest_height))
-    sy2 = int32_t(t.height);
+    sy2 = int32_t(logical_h);
   // A screen-space draw's clip space spans the whole target: what a partly
   // enabled transform would clip is cut by the scissor instead.
   if (vs.screen_space && (vte & 0x0F) == 0x0F) {
@@ -1523,21 +1533,26 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
     sx2 = std::min(sx2, tile_rect.x2);
     sy2 = std::min(sy2, tile_rect.y2);
   }
-  sx1 = std::clamp(sx1, 0, int32_t(t.width));
-  sy1 = std::clamp(sy1, 0, int32_t(t.height));
-  sx2 = std::clamp(sx2, sx1, int32_t(t.width));
-  sy2 = std::clamp(sy2, sy1, int32_t(t.height));
+  sx1 = std::clamp(sx1, 0, int32_t(logical_w));
+  sy1 = std::clamp(sy1, 0, int32_t(logical_h));
+  sx2 = std::clamp(sx2, sx1, int32_t(logical_w));
+  sy2 = std::clamp(sy2, sy1, int32_t(logical_h));
 
-  // All of the above is in guest pixels; the host targets are t.scale times
+  // All of the above is in guest pixels; the host targets are t.scale * msaa_scale times
   // that. Depth is not scaled.
   vs.guest_size[0] = vs.viewport.width;
   vs.guest_size[1] = vs.viewport.height;
-  const float scale = t.scale.Factor();
-  vs.viewport.x *= scale;
-  vs.viewport.y *= scale;
-  vs.viewport.width *= scale;
-  vs.viewport.height *= scale;
-  vs.scissor = ScaleRect(plume::RenderRect(sx1, sy1, sx2, sy2), t.scale);
+  const float scale_x = t.scale.Factor() * float(t.msaa_scale_x);
+  const float scale_y = t.scale.Factor() * float(t.msaa_scale_y);
+  vs.viewport.x *= scale_x;
+  vs.viewport.y *= scale_y;
+  vs.viewport.width *= scale_x;
+  vs.viewport.height *= scale_y;
+  vs.scissor = ScaleRect(plume::RenderRect(sx1 * int32_t(t.msaa_scale_x),
+                                           sy1 * int32_t(t.msaa_scale_y),
+                                           sx2 * int32_t(t.msaa_scale_x),
+                                           sy2 * int32_t(t.msaa_scale_y)),
+                         t.scale);
   return vs;
 }
 
@@ -4089,6 +4104,7 @@ TargetsReuse g_targets_reuse;
 struct ViewportReuse {
   uint64_t seq = 0;
   u32 width = 0, height = 0, guest_width = 0, guest_height = 0, scale = 0, predication = 0;
+  u32 msaa_scale_x = 1, msaa_scale_y = 1;
   size_t tiles = 0;
   ViewportState viewport;
 };
@@ -4108,7 +4124,8 @@ void SurfaceDescWords(u32 va, u32 out[3]) {
 
 bool SameTargets(const Targets &a, const Targets &b) {
   if (a.color_count != b.color_count || a.depth != b.depth || a.width != b.width || a.height != b.height ||
-      a.scale.code != b.scale.code || a.guest_width != b.guest_width || a.guest_height != b.guest_height)
+      a.scale.code != b.scale.code || a.guest_width != b.guest_width || a.guest_height != b.guest_height ||
+      a.msaa_scale_x != b.msaa_scale_x || a.msaa_scale_y != b.msaa_scale_y)
     return false;
   for (u32 i = 0; i < a.color_count; ++i)
     if (a.colors[i] != b.colors[i])
@@ -4287,7 +4304,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     const bool depth_test_active = (dc & 2) != 0;
     const bool depth_write_active = depth_test_active && ((dc & 4) != 0);
     const u32 zfunc = (dc >> 4) & 7;
-    if (!stencil_active && (!depth_test_active || (!depth_write_active && zfunc == 7))) {
+    const bool ps_writes_depth = ps && ps->entry && ((ps->entry->shaderFlags & kShaderFlagPixelDepth) != 0);
+    if (!ps_writes_depth && !stencil_active && (!depth_test_active || (!depth_write_active && zfunc == 7))) {
       targets.depth = nullptr;
     }
   }
@@ -4488,6 +4506,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
                                                           d3d::kDeviceOffsetPredication + 3) &&
       g_viewport_reuse.width == targets.width && g_viewport_reuse.height == targets.height &&
       g_viewport_reuse.guest_width == targets.guest_width && g_viewport_reuse.guest_height == targets.guest_height &&
+      g_viewport_reuse.msaa_scale_x == targets.msaa_scale_x && g_viewport_reuse.msaa_scale_y == targets.msaa_scale_y &&
       g_viewport_reuse.scale == targets.scale.code && g_viewport_reuse.tiles == g_tiles.size() &&
       g_viewport_reuse.predication == g_replay_predication;
   if (viewport_reused) {
@@ -4510,6 +4529,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     g_viewport_reuse.height = targets.height;
     g_viewport_reuse.guest_width = targets.guest_width;
     g_viewport_reuse.guest_height = targets.guest_height;
+    g_viewport_reuse.msaa_scale_x = targets.msaa_scale_x;
+    g_viewport_reuse.msaa_scale_y = targets.msaa_scale_y;
     g_viewport_reuse.scale = targets.scale.code;
     g_viewport_reuse.tiles = g_tiles.size();
     g_viewport_reuse.predication = g_replay_predication;
@@ -4520,7 +4541,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   std::memcpy(sc.screen_offset, viewport.screen_offset, sizeof(sc.screen_offset));
   sc.viewport_size[0] = viewport.guest_size[0];
   sc.viewport_size[1] = viewport.guest_size[1];
-  sc.resolution_scale = targets.scale.Factor();
+  sc.resolution_scale = targets.scale.Factor() * float(targets.msaa_scale_x);
   std::memcpy(sc.pixel_origin, viewport.pixel_origin, sizeof(sc.pixel_origin));  // Renut upstream 574b488
   if (call.primitive == kPointList) {
     // PA_SU_POINT_SIZE: height 0-15, width 16-31, half the size in 12.4 fixed
@@ -5527,8 +5548,10 @@ void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
   if (!GatherTargets(device, targets))
     return;
 
+  const uint32_t logical_w = std::max(1u, targets.width / targets.msaa_scale_x);
+  const uint32_t logical_h = std::max(1u, targets.height / targets.msaa_scale_y);
   // D3D clamps clears to the viewport (CDevice viewport floats at 0x3168).
-  ClearRect r = rect ? *rect : ClearRect{0, 0, int32_t(targets.width), int32_t(targets.height)};
+  ClearRect r = rect ? *rect : ClearRect{0, 0, int32_t(logical_w), int32_t(logical_h)};
   const float vx = device.F32(d3d::kDeviceOffsetViewport), vy = device.F32(d3d::kDeviceOffsetViewport + 4);
   const float vw = device.F32(d3d::kDeviceOffsetViewport + 8), vh = device.F32(d3d::kDeviceOffsetViewport + 12);
   if (vw > 0.0f && vh > 0.0f) {
@@ -5536,18 +5559,22 @@ void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
     // A target grown for tiling: D3D bounds the viewport by the tile-sized
     // surface, which covers the whole target across the tiles (as for the
     // scissor in ComputeViewport).
-    if (targets.width > targets.guest_width && vx2 >= int32_t(targets.guest_width))
-      vx2 = int32_t(targets.width);
-    if (targets.height > targets.guest_height && vy2 >= int32_t(targets.guest_height))
-      vy2 = int32_t(targets.height);
+    if (logical_w > targets.guest_width && vx2 >= int32_t(targets.guest_width))
+      vx2 = int32_t(logical_w);
+    if (logical_h > targets.guest_height && vy2 >= int32_t(targets.guest_height))
+      vy2 = int32_t(logical_h);
     r.x1 = std::max(r.x1, int32_t(vx));
     r.y1 = std::max(r.y1, int32_t(vy));
     r.x2 = std::min(r.x2, vx2);
     r.y2 = std::min(r.y2, vy2);
   }
-  const plume::RenderRect clear_rect = ClampRect(&r, targets.width, targets.height);
+  plume::RenderRect clear_rect = ClampRect(&r, logical_w, logical_h);
   if (clear_rect.right <= clear_rect.left || clear_rect.bottom <= clear_rect.top)
     return;
+  clear_rect = plume::RenderRect(clear_rect.left * int32_t(targets.msaa_scale_x),
+                                 clear_rect.top * int32_t(targets.msaa_scale_y),
+                                 clear_rect.right * int32_t(targets.msaa_scale_x),
+                                 clear_rect.bottom * int32_t(targets.msaa_scale_y));
   ClearTargets(targets, flags, clear_rect, color, depth, stencil);
 }
 

@@ -207,6 +207,7 @@ bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t mi
   surface.size_word = desc.Size;
   surface.info_word = desc.SurfaceInfo;
   surface.format_word = desc.Format;
+  surface.target_msaa = (surface.info_word >> 16) & 3u;
   surface.width = std::max(d3d::SurfaceWidth(surface.size_word), min_width);
   surface.height = std::max(d3d::SurfaceHeight(surface.size_word), min_height);
   surface.scale = scale;
@@ -492,7 +493,29 @@ HostSurface *GetHostSurfaceSlow(u32 surface_va, const d3d::SurfaceDesc *desc) {
     if (seen & 2)
       format = DepthTargetFormat();
   }
-  const uint64_t key = TargetKey(*desc, depth, format, scale);
+  uint64_t key = TargetKey(*desc, depth, format, scale);
+#if defined(TIMESHIFT_RECOMP)
+  // SampleCount() forces COUNT_1 for TimeShift. Only alias an untiled 2x/4x MSAA view
+  // (e.g. 640x360 4xMSAA soft-particle buffers 2276/2280) when an existing 1x EDRAM target
+  // at the matching base and sample-space pitch already covers it (2236/2240 at 1280x720).
+  // Standalone MSAA targets (e.g. tiled 1280x256 4xMSAA main scene Preset 4) stay 1:1 logical.
+  const u32 desc_msaa = (desc->SurfaceInfo >> 16) & 3u;
+  if (desc_msaa != 0 && !g_tiling_width && !g_tiling_height) {
+    const u32 msaa_x = (desc_msaa >= 2u) ? 2u : 1u;
+    const u32 msaa_y = (desc_msaa >= 1u) ? 2u : 1u;
+    const u32 sample_pitch = ((desc->SurfaceInfo & 0x3FFFu) * msaa_x) & 0x3FFFu;
+    const uint64_t key_1x = uint64_t(u32(desc->ColorInfo) & 0xFFF) | uint64_t(sample_pitch) << 12 |
+                            uint64_t(depth) << 28 | uint64_t(scale.code & 7) << 29 |
+                            uint64_t(u32(format)) << 32;
+    auto it_1x = g_targets.find(key_1x);
+    if (it_1x != g_targets.end() && it_1x->second && it_1x->second->texture &&
+        it_1x->second->width >= d3d::SurfaceWidth(desc->Size) * msaa_x &&
+        it_1x->second->height >= d3d::SurfaceHeight(desc->Size) * msaa_y &&
+        it_1x->second->scale == scale) {
+      key = key_1x;
+    }
+  }
+#endif
   auto [bound, first_use] = g_surface_keys.try_emplace(surface_va, key);
   if (first_use) {
     ++g_target_users[key];
