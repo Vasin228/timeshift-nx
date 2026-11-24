@@ -32,6 +32,9 @@
 #if defined(PLUME_DEKO3D)
 #include <plume_deko3d.h>  // banjo-nx: banjo_renut_capture_raw's format check
 #endif
+#if defined(TIMESHIFT_RECOMP)
+#include "perf_breakdown.h"
+#endif
 
 // banjo-nx (2026-10-17, deko3d renderer tests): the captures copy the game's frame texture as it is (4-byte formats only,
 // its channels as BGRA), without the scan-out pass: which of the two a wrong capture comes from.
@@ -419,6 +422,20 @@ bool DiagTextureImageLocked(PresentImage &out) {
 
 // Records the back-buffer pass and presents. Caller holds s.mutex.
 void PresentLocked(VideoState &s, const PresentImage *image) {
+#if defined(TIMESHIFT_RECOMP)
+  uint64_t rt_pres_wait = 0;
+  struct PresentTickGuard {
+    uint64_t t0;
+    uint64_t &wait_ticks;
+    explicit PresentTickGuard(uint64_t &w) : t0(timeshift::telemetry::NowTicks()), wait_ticks(w) {}
+    ~PresentTickGuard() {
+      const uint64_t t1 = timeshift::telemetry::NowTicks();
+      const uint64_t elapsed = t1 > t0 ? (t1 - t0) : 0;
+      if (elapsed > wait_ticks)
+        timeshift::telemetry::g_ren_ticks_pres.fetch_add(elapsed - wait_ticks, std::memory_order_relaxed);
+    }
+  } rt_pres_guard(rt_pres_wait);
+#endif
   // Logs, once, why the GPU stopped if an earlier submission faulted.
   ReportDeviceLost(s.device.get());
   PresentImage diag_image;
@@ -439,8 +456,17 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   plume::RenderCommandSemaphore *acquire = s.acquire_semaphores[s.frame].get();
   uint32_t image_index = 0;
   auto acquire_image = [&] {
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t wt0 = timeshift::telemetry::NowTicks();
+#endif
     render_thread::WaitScope wait;
-    return s.swap_chain->acquireTexture(acquire, &image_index);
+    const bool ok = s.swap_chain->acquireTexture(acquire, &image_index);
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t wt1 = timeshift::telemetry::NowTicks();
+    if (wt1 > wt0)
+      rt_pres_wait += (wt1 - wt0);
+#endif
+    return ok;
   };
   if (!acquire_image()) {
     RebuildSwapChain(s);
@@ -498,8 +524,16 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   bool presented;
   {
     // With vsync the present can hold until the display takes a frame.
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t wt0 = timeshift::telemetry::NowTicks();
+#endif
     render_thread::WaitScope wait;
     presented = s.swap_chain->present(image_index, waits, 1);
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t wt1 = timeshift::telemetry::NowTicks();
+    if (wt1 > wt0)
+      rt_pres_wait += (wt1 - wt0);
+#endif
   }
   if (!presented)
     s.resize_requested.store(true, std::memory_order_release);

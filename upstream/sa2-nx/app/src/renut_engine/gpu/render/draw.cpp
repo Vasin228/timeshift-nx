@@ -28,6 +28,10 @@
 #include <xxhash.h>
 
 #include <rex/system/xmemory.h>
+#if defined(TIMESHIFT_RECOMP)
+#include <rex/cvar.h>
+REXCVAR_DECLARE(bool, renut_skip_shadows);
+#endif
 
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
@@ -50,6 +54,9 @@
 #include <plume_deko3d.h>  // banjo-nx (2026-10-17): Deko3DBindMemExport
 #endif
 #include "renut_engine/gpu/banjo_renut_record.h"  // banjo-nx (package 28b)
+#if defined(TIMESHIFT_RECOMP)
+#include "perf_breakdown.h"
+#endif
 #include <rex/cvar.h>
 
 // banjo-nx (2026-10-17, a diagnostic for the deko3d renderer's missing river water): draws that read memexport results
@@ -163,21 +170,13 @@ bool LazyResolveMipsOn() {
 }
 // sa2-nx (2026-10-28): sa2_renut_colour_handover, once.
 bool ColourHandOverOn() {
-#if defined(TIMESHIFT_RECOMP)
-  return false;
-#else
   static const bool on = REXCVAR_GET(sa2_renut_colour_handover);
   return on;
-#endif
 }
 // sa2-nx (2026-10-28): sa2_renut_clear_repeat, once, and its count (render thread), logged every 3,000.
 bool ClearRepeatOn() {
-#if defined(TIMESHIFT_RECOMP)
-  return false;
-#else
   static const bool on = REXCVAR_GET(sa2_renut_clear_repeat);
   return on;
-#endif
 }
 void CountRepeatedClear() {
   static uint64_t count = 0;
@@ -2028,12 +2027,26 @@ struct TextureSlotMemo {
 };
 // banjo-nx (2026-10-19, render-thread proposal 3): by texture (its header address and the fetch constant's first
 // words), not by fetch slot: a texture bound earlier in the frame, through any slot, is a hit.
-constexpr uint32_t kTextureMemoEntries = 512;
+constexpr uint32_t kTextureMemoEntries = 2048;
+static_assert(kTextureMemoEntries == (1u << 11));
 TextureSlotMemo g_texture_slot_memo[kTextureMemoEntries];
 
 // sa2-nx (2026-10-20, sa2_renut_chain_reuse): 'slot_fx' (32 entries, or null) receives each bound slot's effects (its
 // memo entry's on a hit, the bind's otherwise) and 'all_memo' whether every bound slot went through the memo (a
 // texture header to key it), for the chain's reuse of the next draw.
+// Checks whether a render target set contains a handed-over surface as depth or colour.
+inline bool TargetsHaveSurface(const Targets *t, const HostSurface *s) {
+  if (!t || !s)
+    return false;
+  if (t->depth == s)
+    return true;
+  for (uint32_t i = 0; i < t->color_count; ++i) {
+    if (t->colors[i] == s)
+      return true;
+  }
+  return false;
+}
+
 void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc, BindEffects *slot_fx = nullptr,
                   bool *all_memo = nullptr) {
   if (all_memo)
@@ -2074,15 +2087,18 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
     const u32 texture_va = device.U32(d3d::kDeviceOffsetTextures + r * 4);
     const auto *header = texture_va ? GuestPtr<const d3d::BaseTexture>(texture_va) : nullptr;
     TextureSlotMemo &m =
-        g_texture_slot_memo[((texture_va ^ (fetch.dword[0] * 0x85EBCA6Bu) ^ fetch.dword[1]) * 0x9E3779B1u) >> 23];
-    const bool memo = banjo::renut_gpu::CpuMemosOn() && header;
-    if (all_memo && !memo)
+        g_texture_slot_memo[((texture_va ^ (fetch.dword[0] * 0x85EBCA6Bu) ^ fetch.dword[1]) * 0x9E3779B1u) >> 21];
+    const bool memo = banjo::renut_gpu::CpuMemosOn() && (header || !texture_va);
+    if (all_memo && !(banjo::renut_gpu::CpuMemosOn() && header))
       *all_memo = false;
     if (memo && m.frame == TextureFrameLocked() && m.epoch == g_texture_epoch && m.va == texture_va &&
         (!m.fx.depth_source || m.depth_epoch == g_depth_epoch) &&
         std::memcmp(m.device, fetch.dword, sizeof(m.device)) == 0 &&
-        std::memcmp(m.header, &header->Format, sizeof(m.header)) == 0 &&
-        !(m.fx.handover_surface && g_handover_targets && g_handover_targets->depth == m.fx.handover_surface)) {
+        (!header || std::memcmp(m.header, &header->Format, sizeof(m.header)) == 0) &&
+        !TargetsHaveSurface(g_handover_targets, m.fx.handover_surface)) {
+#if defined(TIMESHIFT_RECOMP)
+      timeshift::telemetry::g_tex_memo_hits.fetch_add(1, std::memory_order_relaxed);
+#endif
       for (HostTexture *t : m.fx.transition)
         if (t)
           TransitionTextureLocked(t, plume::RenderTextureLayout::SHADER_READ);
@@ -2102,6 +2118,9 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
       continue;
     }
     BindEffects fx;
+#if defined(TIMESHIFT_RECOMP)
+    timeshift::telemetry::g_tex_bind_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
     const TextureBinding binding = BindTextureLocked(texture_va, fetch, &fx);
     if (slot_fx)
       slot_fx[r] = fx;
@@ -2139,11 +2158,20 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
         sampler_fetch.dword[5] = (sampler_fetch.dword[5] & 0xFFFu) | (header_fetch.dword[5] & ~0xFFFu);
       }
     }
+#if defined(TIMESHIFT_RECOMP)
+    timeshift::telemetry::ScopedTick tex_sampler_tick(timeshift::telemetry::g_tex_ticks_sampler);
+#endif
     sc.sampler_indices[r] = SamplerWord(SamplerSlotLocked(sampler_fetch, binding.lod_scale, binding.has_physical_mips));
+#if defined(TIMESHIFT_RECOMP)
+    tex_sampler_tick.Stop();
+#endif
     if (memo) {
       m.va = texture_va;
       std::memcpy(m.device, fetch.dword, sizeof(m.device));
-      std::memcpy(m.header, &header->Format, sizeof(m.header));
+      if (header)
+        std::memcpy(m.header, &header->Format, sizeof(m.header));
+      else
+        std::memset(m.header, 0, sizeof(m.header));
       m.frame = TextureFrameLocked();
       m.epoch = g_texture_epoch;  // after the bind (its own bumps)
       m.depth_epoch = g_depth_epoch;
@@ -4242,18 +4270,15 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   }
 
   // sa2-nx (2026-10-20, sa2_renut_chain_reuse): the previous chain draw's targets when the device's target words (bytes
-  // 12816-12835) did not change, no target was built, retired or rebound since (the surface epoch), and the targets'
+  // 12432-12451 in TimeShift, 12816-12835 in SA2) did not change, no target was built, retired or rebound since (the surface epoch), and the targets'
   // descriptor words (which GetHostSurfaceLocked reads in guest memory) are the same.
-#if defined(TIMESHIFT_RECOMP)
-  static const bool targets_reuse_on = false;
-#else
   static const bool targets_reuse_on = REXCVAR_GET(sa2_renut_chain_reuse);
-#endif
   static const bool targets_verify = targets_reuse_on && REXCVAR_GET(sa2_renut_chain_reuse_verify);
   const ChainHint &chain = g_chain_hint;
   Targets targets;
   bool targets_reused = false;
-  if (targets_reuse_on && chain.seq && chain.seq == g_targets_reuse.seq + 1 && !ChainChanged(chain, 12816, 12835) &&
+  if (targets_reuse_on && chain.seq && chain.seq == g_targets_reuse.seq + 1 &&
+      !ChainChanged(chain, d3d::kDeviceOffsetRenderTargets, d3d::kDeviceOffsetDepthStencil + 3) &&
       g_targets_reuse.epoch == SurfaceEpochLocked()) {
     targets_reused = true;
     for (u32 i = 0; targets_reused && i <= d3d::kMaxRenderTargets; ++i) {
@@ -4279,6 +4304,12 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       return false;
     }
   }
+#if defined(TIMESHIFT_RECOMP)
+  if (REXCVAR_GET(renut_skip_shadows) && !targets.color_count && targets.depth &&
+      targets.depth->width == 1024 && targets.depth->height == 1024) {
+    return false;
+  }
+#endif
   if (targets_reuse_on) {
     g_targets_reuse.seq = chain.seq;
     g_targets_reuse.epoch = SurfaceEpochLocked();
@@ -4380,6 +4411,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   else
     std::memset(&sc, 0, sizeof(sc));
   sc.flt_max = std::numeric_limits<float>::max();  // banjo-nx: 0x7F7FFFFF, the clamps' bound (shader_common.h)
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick ren_tex(timeshift::telemetry::g_ren_ticks_tex);
+#endif
   const u32 texture_mask =
       (vs->entry ? vs->entry->textureFetchMask : 0) | (ps && ps->entry ? ps->entry->textureFetchMask : 0);
   g_handover_targets = &targets;  // banjo-nx (2026-10-19, banjo_deko3d_depth_handover)
@@ -4391,16 +4425,21 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     uint64_t seq = 0, frame = 0, epoch = 0, depth_epoch = 0;
     u32 mask = 0;
     const HostSurface *depth = nullptr;
+    u32 color_count = 0;
+    const HostSurface *colors[d3d::kMaxRenderTargets] = {};
     u32 header[32][6] = {};
     BindEffects fx[32];
     u32 indices[3][32] = {};
     u32 samplers[32] = {};
   };
   static TexturesReuse treuse;
+  bool same_targets = treuse.depth == targets.depth && treuse.color_count == targets.color_count;
+  for (u32 i = 0; same_targets && i < targets.color_count; ++i)
+    same_targets = treuse.colors[i] == targets.colors[i];
   bool textures_reused = targets_reuse_on && chain.seq && chain.seq == treuse.seq + 1 && treuse.mask == texture_mask &&
                          !ChainChanged(chain, 1152, 1775) && !ChainChanged(chain, d3d::kDeviceOffsetTextures, d3d::kDeviceOffsetTextures + d3d::kTextureFetchSlots * 4 - 1) &&
                          treuse.frame == TextureFrameLocked() && treuse.epoch == g_texture_epoch &&
-                         treuse.depth_epoch == g_depth_epoch && treuse.depth == targets.depth;
+                         treuse.depth_epoch == g_depth_epoch && same_targets;
   for (u32 r = 0; textures_reused && r < d3d::kTextureFetchSlots; ++r) {
     if (!(texture_mask & (1u << r)))
       continue;
@@ -4455,6 +4494,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       treuse.epoch = g_texture_epoch;
       treuse.depth_epoch = g_depth_epoch;
       treuse.depth = targets.depth;
+      treuse.color_count = targets.color_count;
+      for (u32 i = 0; i < targets.color_count; ++i)
+        treuse.colors[i] = targets.colors[i];
       for (u32 r = 0; r < d3d::kTextureFetchSlots; ++r) {
         if (!(texture_mask & (1u << r)))
           continue;
@@ -4474,6 +4516,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   if (textures_reused && targets_reuse_on)
     treuse.seq = chain.seq;
   g_handover_targets = nullptr;
+#if defined(TIMESHIFT_RECOMP)
+  ren_tex.Stop();
+#endif
 
   const d3d::Device &dev = device.dev();
   const u8 *bools = reinterpret_cast<const u8 *>(&dev.m_Constants.VertexShaderB[0]);
@@ -4560,6 +4605,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     sc.point_state[3] = float(point_min_max >> 16) / minmax_scale;
   }
 
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick ren_geo(timeshift::telemetry::g_ren_ticks_geo);
+#endif
   Geometry geometry;
   if (call.tessellation ? !PrepareTessellation(device, call, geometry, sc.tessellation)
                         : !PrepareGeometry(device, call, geometry)) {
@@ -4618,6 +4666,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       banjo::renut_gpu::CountFetchAlignment((bits & 15u) == 0);
     }
   }
+#endif
+#if defined(TIMESHIFT_RECOMP)
+  ren_geo.Stop();
+  timeshift::telemetry::ScopedTick ren_const(timeshift::telemetry::g_ren_ticks_const);
 #endif
   static constexpr u32 kAllRegisters[8] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
   static constexpr u32 kNoRegisters[8] = {};
@@ -4701,6 +4753,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   }
   if (!fetch_alloc || (!pushed && (!vs_alloc || !ps_alloc || !sc_alloc)) || !memexport)
     return false;
+#if defined(TIMESHIFT_RECOMP)
+  ren_const.Stop();
+  timeshift::telemetry::ScopedTick ren_pipe(timeshift::telemetry::g_ren_ticks_pipe);
+#endif
 
   // sa2-nx (2026-10-20, sa2_renut_chain_reuse): a chain draw takes the previous draw's key when nothing MakeKey reads
   // changed: the device's bool constants and render state packets (bytes 10112-10599: VertexShaderB / PixelShaderB,
@@ -4719,11 +4775,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     PipelineKey key{};
   };
   static KeyReuse reuse;
-#if defined(TIMESHIFT_RECOMP)
-  static const bool reuse_on = false;
-#else
   static const bool reuse_on = REXCVAR_GET(sa2_renut_chain_reuse);
-#endif
   static const bool reuse_verify = reuse_on && REXCVAR_GET(sa2_renut_chain_reuse_verify);
   const ChainHint &hint = chain;
   const ShaderCacheEntry *const ps_entry = ps ? ps->entry : nullptr;
@@ -4864,6 +4916,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     }
   }
 
+#if defined(TIMESHIFT_RECOMP)
+  ren_pipe.Stop();
+  timeshift::telemetry::ScopedTick ren_const_bind(timeshift::telemetry::g_ren_ticks_const);
+#endif
   if (UsesVulkanBindings()) {  // banjo-nx: and deko3d
     // banjo-nx (banjo_renut_push_point_only): with the constants in uniform buffers only point_sprite_gs reads the
     // push constant, so the other draws do not push it (NVK: a root-table upload a draw less).
@@ -4904,10 +4960,17 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     SetRootDescriptor(cmd, plume::RenderBufferReference(memexport), kDrawRootMemExport);
   }
 
+#if defined(TIMESHIFT_RECOMP)
+  ren_const_bind.Stop();
+  timeshift::telemetry::ScopedTick ren_geo_bind(timeshift::telemetry::g_ren_ticks_geo);
+#endif
   if (!BindStreams(device, call, *vs, shader_strides, declaration->layout,
                    declaration->layout_hash, geometry, gpu_streams)) {
     return false;
   }
+#if defined(TIMESHIFT_RECOMP)
+  ren_geo_bind.Stop();
+#endif
   if (gpu_profile::Timed()) {
     // banjo-nx (package 28b): the GPU profile's draws a frame, and with banjo_renut_diag_gpu_shaders its label.
     // banjo-nx (2026-10-19, render-thread proposal 7): only in the frames the profile times.
@@ -4942,6 +5005,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
       geometry.indexed ? geometry.index_count : geometry.vertex_count,
       key.depth_control, key.color_mask, geometry.indexed};
 #endif
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick ren_draw(timeshift::telemetry::g_ren_ticks_pipe);
+#endif
   if (geometry.indexed) {
     SetIndexBuffer(cmd, geometry.index_view);
     // banjo-nx: instanced for a tessellation grid (banjo_gpu_tess_grid); 1 for every other indexed draw.
@@ -4953,6 +5019,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     FinishMemExportLocked(s, exports, export_count, export_offsets);
     g_bound.framebuffer = nullptr;  // the copies end any render pass
   }
+#if defined(TIMESHIFT_RECOMP)
+  ren_draw.Stop();
+#endif
   return true;
 }
 
@@ -5234,6 +5303,67 @@ bool ResolveDepth(HostSurface *surface, HostTexture *dest, const ClearRect &src,
   auto &s = State();
   const uint32_t variant = surface->samples != plume::RenderSampleCount::COUNT_1 ? 1 : 0;
   const uint32_t source_slot = SurfaceSampleSlotLocked(surface);
+  const bool msaa = surface->samples != plume::RenderSampleCount::COUNT_1;
+#if defined(TIMESHIFT_RECOMP)
+  const bool fast_float = !words && !msaa && IsDeko3D() && s.resolve_copy_ps;
+#else
+  constexpr bool fast_float = false;
+#endif
+  if (fast_float) {
+    auto &pipeline = s.resolve_copy_pipelines[uint32_t(dest->host_format)];
+    if (!pipeline) {
+      plume::RenderGraphicsPipelineDesc desc;
+      desc.pipelineLayout = s.utility_layout.get();
+      desc.vertexShader = s.present_vs.get();
+      desc.pixelShader = s.resolve_copy_ps.get();
+      desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+      desc.cullMode = plume::RenderCullMode::NONE;
+      desc.renderTargetCount = 1;
+      desc.renderTargetFormat[0] = dest->host_format;
+      desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
+      desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
+      pipeline = s.device->createGraphicsPipeline(desc);
+      if (pipeline)
+        pipeline->setName("renut resolve depth copy");
+    }
+    if (pipeline && !dest->copy_framebuffer) {
+      const plume::RenderTexture *targets[] = {dest->texture.get()};
+      dest->copy_framebuffer = s.device->createFramebuffer(plume::RenderFramebufferDesc(targets, 1));
+    }
+    if (source_slot != kInvalidDescriptor && pipeline && dest->copy_framebuffer) {
+      plume::RenderCommandList *cmd = s.command_list;
+      static const uint32_t kProfileLabel = gpu_profile::Label("depth resolves");
+      gpu_profile::Mark(s, kProfileLabel);
+      TransitionSurfaceLocked(surface, plume::RenderTextureLayout::SHADER_READ);
+      TransitionTextureLocked(dest, plume::RenderTextureLayout::COLOR_WRITE);
+      const plume::RenderRect dst_rect = ScaleRect(
+          plume::RenderRect(dest_x, dest_y, dest_x + (src.x2 - src.x1), dest_y + (src.y2 - src.y1)),
+          surface->scale);
+      cmd->setFramebuffer(dest->copy_framebuffer.get());
+      cmd->setViewports(plume::RenderViewport(float(dst_rect.left), float(dst_rect.top),
+                                              float(dst_rect.right - dst_rect.left),
+                                              float(dst_rect.bottom - dst_rect.top)));
+      cmd->setScissors(dst_rect);
+      cmd->setGraphicsPipelineLayout(s.utility_layout.get());
+      cmd->setPipeline(pipeline.get());
+      cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
+      cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
+      UtilityPush push{};
+      push.scale[0] = push.scale[1] = 1.0f;
+      push.translate[0] = float(scale.Coord(src.x1) - scale.Coord(dest_x));
+      push.translate[1] = float(scale.Coord(src.y1) - scale.Coord(dest_y));
+      push.texture_index = source_slot;
+      push.sampler_index = kPointClampSamplerSlot;
+      cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      cmd->drawInstanced(3, 1, 0, 0);
+      TransitionTextureLocked(dest, plume::RenderTextureLayout::SHADER_READ);
+      g_bound.framebuffer = nullptr;
+      g_bound.pipeline = nullptr;
+      g_bound.layout = false;
+      g_bound.viewport_set = false;
+      return true;
+    }
+  }
   if (!s.depth_resolve_float_pipeline[variant])
     words = true;  // banjo-nx (banjo_renut_depth_words_lazy): no depth-only pipeline
   if (source_slot == kInvalidDescriptor || !dest->depth_framebuffer ||
@@ -5248,13 +5378,15 @@ bool ResolveDepth(HostSurface *surface, HostTexture *dest, const ClearRect &src,
   if (words && dest->words) {
     TransitionTextureLocked(dest->words.get(), plume::RenderTextureLayout::COLOR_WRITE);
   }
+  const plume::RenderRect dst_rect = ScaleRect(
+      plume::RenderRect(dest_x, dest_y, dest_x + (src.x2 - src.x1), dest_y + (src.y2 - src.y1)),
+      surface->scale);
   cmd->setFramebuffer(dest->depth_framebuffer.get());
   // Pixel coordinates are destination texels.
-  cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(dest->alloc_width),
-                                          float(dest->alloc_height)));
-  cmd->setScissors(ScaleRect(plume::RenderRect(dest_x, dest_y, dest_x + (src.x2 - src.x1),
-                                               dest_y + (src.y2 - src.y1)),
-                             surface->scale));
+  cmd->setViewports(plume::RenderViewport(float(dst_rect.left), float(dst_rect.top),
+                                          float(dst_rect.right - dst_rect.left),
+                                          float(dst_rect.bottom - dst_rect.top)));
+  cmd->setScissors(dst_rect);
   cmd->setGraphicsPipelineLayout(s.utility_layout.get());
   cmd->setPipeline(words ? s.depth_resolve_pipeline[variant].get() : s.depth_resolve_float_pipeline[variant].get());
   cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
@@ -5498,10 +5630,14 @@ bool DrawResolveCopy(HostSurface *surface, HostTexture *dest, const plume::Rende
   plume::RenderCommandList *cmd = s.command_list;
   TransitionSurfaceLocked(surface, plume::RenderTextureLayout::SHADER_READ);
   TransitionTextureLocked(dest, plume::RenderTextureLayout::COLOR_WRITE);
+  const plume::RenderRect dst_rect(int32_t(host_x), int32_t(host_y),
+                                   int32_t(host_x) + (rect.right - rect.left),
+                                   int32_t(host_y) + (rect.bottom - rect.top));
   cmd->setFramebuffer(dest->copy_framebuffer.get());
-  cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(dest->alloc_width), float(dest->alloc_height)));
-  cmd->setScissors(plume::RenderRect(int32_t(host_x), int32_t(host_y), int32_t(host_x) + (rect.right - rect.left),
-                                     int32_t(host_y) + (rect.bottom - rect.top)));
+  cmd->setViewports(plume::RenderViewport(float(dst_rect.left), float(dst_rect.top),
+                                          float(dst_rect.right - dst_rect.left),
+                                          float(dst_rect.bottom - dst_rect.top)));
+  cmd->setScissors(dst_rect);
   cmd->setGraphicsPipelineLayout(s.utility_layout.get());
   cmd->setPipeline(pipeline.get());
   cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
@@ -5579,7 +5715,11 @@ void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
 }
 
 // banjo-nx (2026-10-19, banjo_renut_depth_words_lazy): a destination's first resolves write the words either way.
+#if defined(TIMESHIFT_RECOMP)
+constexpr uint32_t kDepthWordsProbe = 0;
+#else
 constexpr uint32_t kDepthWordsProbe = 300;
+#endif
 
 void EnsureDepthWordsLocked(HostTexture &dest) {
   if (!banjo::renut_gpu::DepthWordsLazyOn())
@@ -6001,6 +6141,9 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                         u32 dest_texture_va, const d3d::TextureFetchConstant *dest_format,
                         i32 dest_x, i32 dest_y, u32 dest_level, u32 dest_slice,
                         const float clear_color[4], float clear_depth, u32 clear_stencil) {
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick ren_res(timeshift::telemetry::g_ren_ticks_res);
+#endif
   auto &s = State();
   static const uint32_t kProfileLabel = gpu_profile::Label("resolves");
   gpu_profile::Mark(s, kProfileLabel);
@@ -6027,6 +6170,29 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
   }
   plume::RenderCommandList *cmd = s.command_list;
   static uint32_t depth_logged = 0;
+
+#if defined(TIMESHIFT_RECOMP)
+  ClearRect coalesced_full_rect{};
+  if (surface && !g_tiles.empty() && source_rect && dest_x == 0 && dest_y == source_rect->y1 &&
+      source_rect->x1 == 0 && source_rect->x2 >= int32_t(surface->width) &&
+      (source_rect->y1 > 0 || source_rect->y2 < int32_t(surface->height))) {
+    const bool first_strip = (source_rect->y1 == 0);
+    const bool last_strip = (source_rect->y2 >= int32_t(surface->height));
+    coalesced_full_rect = ClearRect{0, 0, int32_t(surface->width), int32_t(surface->height)};
+    source_rect = &coalesced_full_rect;
+    dest_y = 0;
+    if (first_strip) {
+      // Strip 0 resolves/hands over the entire 1280x720 surface; defer any resolve-clear to the last strip.
+      flags &= ~0x300u;
+    } else {
+      // Middle/last strips: the whole surface was already resolved/handed over on strip 0.
+      dest_texture_va = 0;
+      if (!last_strip) {
+        flags &= ~0x300u;
+      }
+    }
+  }
+#endif
 
   // The source rect within the target and the destination level.
   auto fit = [&](const HostTexture *dest, ClearRect &src) {
@@ -6065,24 +6231,26 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
         const bool words = !lazy || dest->words_wanted || dest->words_probe < kDepthWordsProbe;
         if (banjo::renut_gpu::ResolveSkipOn() && dest->resolve_signature == sig) {
           banjo::renut_gpu::CountSkippedResolve(true);
-        } else if (HandOverResolveLocked(surface, dest, src, dest_x, dest_y, words) ||
-                   ResolveDepth(surface, dest, src, dest_x, dest_y, words)) {
-          dest->resolve_signature = sig;
-          dest->words_current = words;
-          if (!dest->words_wanted && dest->words_probe < kDepthWordsProbe)
-            ++dest->words_probe;
-          if (!words)
-            banjo::renut_gpu::CountLazyWords(0);
-          dest->last_source_generation = surface->generation;
-          dest->last_source_writes = surface->writes;
-          dest->last_src[0] = src.x1;
-          dest->last_src[1] = src.y1;
-          dest->last_src[2] = src.x2;
-          dest->last_src[3] = src.y2;
-          dest->last_dest_x = dest_x;
-          dest->last_dest_y = dest_y;
         } else {
-          dest->resolve_signature = 0;
+          const bool handed = HandOverResolveLocked(surface, dest, src, dest_x, dest_y, words);
+          if (handed || ResolveDepth(surface, dest, src, dest_x, dest_y, words)) {
+            dest->resolve_signature = sig;
+            dest->words_current = words;
+            if (!dest->words_wanted && dest->words_probe < kDepthWordsProbe)
+              ++dest->words_probe;
+            if (!words)
+              banjo::renut_gpu::CountLazyWords(0);
+            dest->last_source_generation = surface->generation;
+            dest->last_source_writes = surface->writes;
+            dest->last_src[0] = src.x1;
+            dest->last_src[1] = src.y1;
+            dest->last_src[2] = src.x2;
+            dest->last_src[3] = src.y2;
+            dest->last_dest_x = dest_x;
+            dest->last_dest_y = dest_y;
+          } else {
+            dest->resolve_signature = 0;
+          }
         }
       }
     } else if (HostTexture *dest = GetResolveTextureLocked(dest_texture_va, surface->format,
@@ -6115,7 +6283,8 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
         const bool multisampled = surface->samples != plume::RenderSampleCount::COUNT_1;
         // sa2-nx (2026-10-28, sa2_renut_colour_handover): left in the target's image, or (single-sampled)
         // copied as before (CopyColourResolveLocked: drawn or copied, then the host levels).
-        if (ColourHandOverResolveLocked(surface, dest, src, dest_x, dest_y, slice, z)) {
+        const bool handed = ColourHandOverResolveLocked(surface, dest, src, dest_x, dest_y, slice, z);
+        if (handed) {
           // banjo::renut_gpu::CountHandOver(0) counted it
         } else if (!multisampled) {
           CopyColourResolveLocked(surface, dest, rect, host_x, host_y, slice, z);
@@ -6181,6 +6350,15 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
       t.depth = surface;
     else
       t.colors[t.color_count++] = surface;
+#if defined(TIMESHIFT_RECOMP)
+    if (!surface->depth && (flags & 0x200)) {
+      if (HostSurface *d_surf = GetHostSurfaceLocked(device.U32(d3d::kDeviceOffsetDepthStencil))) {
+        if (d_surf->depth && d_surf->width == surface->width && d_surf->height == surface->height) {
+          t.depth = d_surf;
+        }
+      }
+    }
+#endif
     t.width = surface->width;
     t.height = surface->height;
     t.scale = surface->scale;

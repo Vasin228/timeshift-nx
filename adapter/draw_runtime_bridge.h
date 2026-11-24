@@ -4,6 +4,7 @@
 namespace timeshift::renderer {
 bool DrawHooksEnabled();
 void FlushPendingDraw(uint32_t device);
+uint64_t ConsumeImmediatePending(uint32_t device);
 void DrawIndexed(uint32_t device,uint32_t primitive,int32_t base,uint32_t start,uint32_t count);
 void DrawVerticesUP(uint32_t device,uint32_t primitive,uint32_t count,uint32_t data,uint32_t stride);
 void DrawIndexedUP(uint32_t device,uint32_t primitive,uint32_t minimum,uint32_t vertices,uint32_t count,

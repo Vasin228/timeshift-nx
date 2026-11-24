@@ -24,7 +24,7 @@ REXCVAR_DEFINE_STRING(renut_ambient_occlusion, "Half", "Nuts&Bolts/Graphics",
     .allowed({"Half", "Full"});
 
 #if defined(TIMESHIFT_RECOMP)
-REXCVAR_DEFINE_STRING(renut_anisotropic_filtering, "16x", "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_anisotropic_filtering, "4x", "Nuts&Bolts/Graphics",
                       "Anisotropic texture filtering: the game's own, or at least 2x, 4x, 8x or "
                       "16x.")
     .allowed({"Game", "2x", "4x", "8x", "16x"});

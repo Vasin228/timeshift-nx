@@ -284,8 +284,12 @@ RenderScale ResolutionScale() {
 void LatchResolutionScaleLocked() {
   LatchGraphicsOptionsLocked();
 #if defined(TIMESHIFT_RECOMP)
-  // Establish correctness at the title's native scale before adding upscaling.
-  RenderScale scale{};
+  const std::string resolution = REXCVAR_GET(renut_resolution);
+  RenderScale scale{resolution == "480p"    ? 1u
+                    : resolution == "1080p" ? 2u
+                    : resolution == "1440p" ? 3u
+                    : resolution == "4K"    ? 4u
+                                            : 0u};
   constexpr bool follow_mode = false, docked = false;
 #else
   const std::string resolution = REXCVAR_GET(renut_resolution);

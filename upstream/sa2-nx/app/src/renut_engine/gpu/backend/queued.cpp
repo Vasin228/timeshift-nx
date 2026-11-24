@@ -29,6 +29,9 @@
 #include "renut_engine/gpu/banjo_renut_tuning.h"
 #include "renut_engine/gpu/sa2_line_compare.h"
 #include "renut_engine/gpu/sa2_setter_marks.h"
+#if defined(TIMESHIFT_RECOMP)
+#include "perf_breakdown.h"
+#endif
 #if defined(SA2_D3D_CENSUS_BUILD)
 #include "me/sa2_d3d_api.h"  // sa2-nx (2026-10-28): the setter census (census builds only)
 #endif
@@ -135,10 +138,8 @@ QueuedKeys g_keys;
   k.precise = k.marks && REXCVAR_GET(sa2_renut_setters_precise);
   k.spin = REXCVAR_GET(sa2_renut_lockfree_queue);
 #if defined(TIMESHIFT_RECOMP)
-  // The SA2 setter census and dirty-tag map are not TimeShift evidence.
-  // Keep complete snapshots until the 6274 delta/mark path is proved.
-  k.deltas = k.constants = k.deferred = k.narrow = false;
-  k.marks = k.copy = k.precise = k.verify = false;
+  // TimeShift has no SA2 setter marks; keep marks/precise off while allowing NEON snapshot deltas.
+  k.marks = k.copy = k.precise = false;
 #endif
   k.ready = false;
   g_keys = k;
@@ -462,6 +463,7 @@ using ChainGuard = std::unique_lock<ChainLock>;
 struct DeltaChain {
   ChainLock mutex;                      // the chain's draws are made and queued in one order
   const d3d::Device *device = nullptr;  // the device it follows; none: the next draw rebases
+  std::atomic<bool> scan_all_consts{true};
   uint64_t vs = 0, ps = 0;              // groups whole captures consumed since its last draw: they follow
   uint64_t deltas = 0, rebases = 0, bytes = 0, chunks = 0, groups = 0;  // the 10 s report's
   uint64_t whole = 0;  // sa2-nx: whole captures outside the chain (Begin*Vertices draws), under the lock too
@@ -632,7 +634,15 @@ void QueueCapture(DrawCapture *capture) {
       call.up_vertices = capture->vertices.data();
     if (!capture->indices.empty())
       call.up_indices = capture->indices.data();
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t rt_dev_t0 = timeshift::telemetry::NowTicks();
+#endif
     const u8 *device = DeviceForDraw(*capture);
+#if defined(TIMESHIFT_RECOMP)
+    const uint64_t rt_dev_t1 = timeshift::telemetry::NowTicks();
+    if (rt_dev_t1 > rt_dev_t0)
+      timeshift::telemetry::g_ren_ticks_dev.fetch_add(rt_dev_t1 - rt_dev_t0, std::memory_order_relaxed);
+#endif
     if (capture->snapshot != SnapshotKind::Whole && ChainConstantsOn()) {
       // sa2-nx (sa2_renut_snapshot_deltas_constants): every constant is the rebuilt device's (no running device).
       const ReplayConstants chain{nullptr, ~uint64_t(0), ~uint64_t(0), &g_chain_vs_dirty, &g_chain_ps_dirty,
@@ -681,8 +691,10 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
   const auto *bytes = reinterpret_cast<const u8 *>(device);
   if (c.device != device) {
     // The chain's first draw (or a frame's): the whole device, which the render thread takes as its own.
+#if !defined(TIMESHIFT_RECOMP)
     for (auto &mask : device->m_Pending)
       mask = 0;
+#endif
     capture->state.assign(bytes, bytes + d3d::kDeviceSnapshotSize);
     std::memcpy(c.shadow, bytes, d3d::kDeviceSnapshotSize);
     c.device = device;
@@ -725,8 +737,10 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     const bool precise = sa2::renut::g_setters_precise;
     sa2::renut::DropApart();
     c.vs = c.ps = 0;
+#if !defined(TIMESHIFT_RECOMP)
     for (auto &mask : device->m_Pending)
       mask = 0;
+#endif
     std::vector<u8> &out = capture->state;
     if (out.size() < kDeltaMaxBytes)
       out.resize(kDeltaMaxBytes);  // once per pooled capture: written below, never cleared
@@ -809,6 +823,11 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     } else {
       const DeltaChunkList &list = narrow ? kDeltaReadChunks : kDeltaAllChunks;
       for (u32 k = 0; k < list.count; ++k) {
+        const u32 at = DeltaChunkOffset(list.index[k]);
+        __builtin_prefetch(bytes + at);
+        __builtin_prefetch(c.shadow + at);
+      }
+      for (u32 k = 0; k < list.count; ++k) {
         const u32 i = list.index[k];
         if (compare(i) && check && !(marked.w[i / 64] >> (i % 64) & 1)) {
           // A change no mark named: the marks are off from here on (this draw keeps it, as every draw will). The
@@ -849,11 +868,40 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
         }
       }
     }
+#if defined(TIMESHIFT_RECOMP)
+    const bool need_full_const_scan =
+        call.up_vertices != nullptr || c.scan_all_consts.exchange(false, std::memory_order_relaxed);
+    if (need_full_const_scan) {
+      // Scan all 64 VS and 64 PS float constant groups against c.shadow after UP/Clear/Resolve/Rebase
+      // because guest D3D may have cleared or mutated m_Pending[0..1].
+      vs = 0;
+      ps = 0;
+      for (u32 g = 0; g < 64; ++g) {
+        const u32 at = kDeltaVertexF + g * kDeltaUnitBytes;
+        if (sa2::renut::Line64Differs(bytes + at, c.shadow + at, neon)) {
+          std::memcpy(c.shadow + at, bytes + at, kDeltaUnitBytes);
+          vs |= uint64_t(1) << (63 - g);
+        }
+      }
+      for (u32 g = 0; g < 64; ++g) {
+        const u32 at = kDeltaPixelF + g * kDeltaUnitBytes;
+        if (sa2::renut::Line64Differs(bytes + at, c.shadow + at, neon)) {
+          std::memcpy(c.shadow + at, bytes + at, kDeltaUnitBytes);
+          ps |= uint64_t(1) << (63 - g);
+        }
+      }
+    }
+#endif
     for (const auto [dirty, base] : {std::pair{vs, kDeltaVertexF}, std::pair{ps, kDeltaPixelF}}) {
       ForEachGroupRun(dirty, [&](u32 first, u32 count) {
         const u32 group_bytes = count * kDeltaUnitBytes;
         std::memcpy(to, bytes + base + first * kDeltaUnitBytes, group_bytes);
         to += group_bytes;
+#if defined(TIMESHIFT_RECOMP)
+        if (!need_full_const_scan)
+          std::memcpy(c.shadow + base + first * kDeltaUnitBytes,
+                      bytes + base + first * kDeltaUnitBytes, group_bytes);
+#endif
         // sa2-nx (sa2_renut_setters_precise): the render thread's constants, for the checks.
         if (precise)
           std::memcpy(c.const_shadow + (base - kDeltaVertexF) + first * kDeltaUnitBytes,
@@ -1046,6 +1094,7 @@ void QueueClear(u32 device_va, u32 flags, const ClearRect *rect, const float col
                 u32 stencil) {
   FlushDeferredVertices(device_va);
   RunReadyCallbacks();
+  g_delta.scan_all_consts.store(true, std::memory_order_relaxed);
   const auto *device = GuestPtr<const u8>(device_va);
   if (!device)
     return;
@@ -1069,6 +1118,7 @@ void QueueResolve(u32 device_va, u32 flags, const ClearRect *source_rect, u32 de
                   const float clear_color[4], float clear_depth, u32 clear_stencil) {
   FlushDeferredVertices(device_va);
   RunReadyCallbacks();
+  g_delta.scan_all_consts.store(true, std::memory_order_relaxed);
   const auto *device = GuestPtr<const u8>(device_va);
   if (!device)
     return;

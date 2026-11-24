@@ -55,7 +55,7 @@ def compile_app_units():
         str(AARCH64_CXX),
         '-march=armv8-a+crc+crypto', '-mtune=cortex-a57', '-mtp=soft',
         '-ftls-model=local-exec', '-ffunction-sections', '-fdata-sections',
-        '-D__SWITCH__', '-g', '-O2', '-DNDEBUG', '-std=gnu++23', '-fPIE',
+        '-D__SWITCH__', '-g', '-O3', '-DNDEBUG', '-std=gnu++23', '-fPIE',
         '-DFMT_HEADER_ONLY', '-DNX', '-DPLUME_DEKO3D=1', '-DRENUT_RECOMP',
         '-DREXGLUE_PLATFORM_SWITCH=1', '-DSA2_SWITCH_NO_NVK=1',
         '-DSPDLOG_FMT_EXTERNAL', '-DTIMESHIFT_RECOMP', '-DVK_USE_PLATFORM_VI_NN',
@@ -110,14 +110,8 @@ def compile_app_units():
         assert obj.exists(), f"Object {obj} not generated"
 
 def collect_objects():
-    # 1. 159 recomp objects from switch-build-app (excluding 2, 78, 153 and replacing register.o)
-    recomp_dir = Path('/root/lab/switch-build-app/CMakeFiles/timeshift_recomp.dir/generated/default')
-    recomp_objs = sorted(recomp_dir.glob('*.o'))
-    assert len(recomp_objs) == 163, f"Expected 163 recomp objects, found {len(recomp_objs)}"
-    
-    excluded_names = {'timeshift_recomp.2.o', 'timeshift_recomp.78.o', 'timeshift_recomp.153.o', 'timeshift_register.o', 'timeshift_init.o'}
-    retained_recomp = [p for p in recomp_objs if p.name not in excluded_names]
-    assert len(retained_recomp) == 158, f"Expected 158 retained recomp objects, found {len(retained_recomp)}"
+    # 1. All 161 guest recomp objects are compiled at -O3 in timeshift_renut_guest_wait
+    retained_recomp = []
 
     # 2. Extract objects from compile_commands.json in core-switch
     compile_cmds = json.loads((BUILD_CORE / 'compile_commands.json').read_text())
@@ -134,8 +128,8 @@ def collect_objects():
             paths.append(p)
         return paths
 
-    # 3 retained guest objects (replacing 2, 78, 153)
-    guest_wait_objs = get_objs_for_target('timeshift_renut_guest_wait', 3)
+    # All 161 guest recomp objects compiled at -O3
+    guest_wait_objs = get_objs_for_target('timeshift_renut_guest_wait', 161)
     
     # 27 core renderer objects
     core_objs = get_objs_for_target('timeshift_renut_core', 27)
@@ -196,8 +190,8 @@ def collect_objects():
 
     assert len(all_objs) == 220, f"Expected 220 total objects, got {len(all_objs)}"
     print(f"Collected exactly {len(all_objs)} AArch64 objects:")
-    print(f"  158 retained recomp objects")
-    print(f"    3 managed guest objects (chunks 2, 78, 153)")
+    print(f"    0 retained -O2 recomp objects")
+    print(f"  161 managed -O3 guest objects")
     print(f"   27 core renderer objects")
     print(f"   24 adapter objects")
     print(f"    5 app / tuning / thunk / init objects")
@@ -222,6 +216,11 @@ def link_candidate(objects):
         '-Wl,--gc-sections',
         '-Wl,--wrap=nvGpuChannelKickoff',
         '-Wl,--wrap=nvioctlChannel_SubmitGpfifo',
+        '-Wl,--wrap=__imp__XamInputGetState',
+        '-Wl,--wrap=sub_82281840',
+        '-Wl,--wrap=sub_821E1E50',
+        '-Wl,--wrap=sub_821EFB10',
+        '-Wl,--wrap=sub_822720D8',
         *map(str, objects),
         '-Wl,--start-group',
         str(BUILD_CORE / 'plume/libplume.a'),

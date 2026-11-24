@@ -1,10 +1,11 @@
 #pragma once
 #include "source_memory.h"
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <utility>
+#include <vector>
 struct PPCContext;
 
 namespace timeshift::renderer {
@@ -32,23 +33,25 @@ class DeviceRegistry {
    public:
     Lease()=default;
     ~Lease(){Drop();}
-    Lease(Lease&&other)noexcept:entry_(std::move(other.entry_)),lock_(std::move(other.lock_)),counted_(std::exchange(other.counted_,false)){}
+    Lease(Lease&&other)noexcept:entry_(std::move(other.entry_)),raw_entry_(std::exchange(other.raw_entry_,nullptr)),lock_(std::move(other.lock_)),counted_(std::exchange(other.counted_,false)){}
     Lease& operator=(Lease&&other)noexcept{
-      if(this!=&other){Drop();entry_=std::move(other.entry_);lock_=std::move(other.lock_);counted_=std::exchange(other.counted_,false);}return *this;
+      if(this!=&other){Drop();entry_=std::move(other.entry_);raw_entry_=std::exchange(other.raw_entry_,nullptr);lock_=std::move(other.lock_);counted_=std::exchange(other.counted_,false);}return *this;
     }
-    explicit operator bool()const{return bool(entry_);}
-    Entry *operator->()const{return entry_.get();}
-    Entry &operator*()const{return *entry_;}
-    void FlushSources(uint32_t device=0){if(entry_)entry_->FlushSources(device);}
+    explicit operator bool()const{return raw_entry_!=nullptr;}
+    Entry *operator->()const{return raw_entry_;}
+    Entry &operator*()const{return *raw_entry_;}
+    void FlushSources(uint32_t device=0){if(raw_entry_)raw_entry_->FlushSources(device);}
    private:
     friend class DeviceRegistry;
-    explicit Lease(std::shared_ptr<Entry> p):entry_(std::move(p)),lock_(entry_->serial){}
+    explicit Lease(std::shared_ptr<Entry> p):entry_(std::move(p)),raw_entry_(entry_.get()),lock_(raw_entry_->serial){}
+    Lease(Entry *p,std::unique_lock<std::recursive_mutex> lk,bool counted):raw_entry_(p),lock_(std::move(lk)),counted_(counted){}
     std::shared_ptr<Entry> entry_;
+    Entry *raw_entry_=nullptr;
     std::unique_lock<std::recursive_mutex> lock_;
     bool counted_=false;
     void Drop()noexcept{
-      if(entry_&&counted_)--entry_->leases;
-      counted_=false;if(lock_.owns_lock())lock_.unlock();entry_.reset();
+      if(raw_entry_&&counted_)--raw_entry_->leases;
+      counted_=false;raw_entry_=nullptr;if(lock_.owns_lock())lock_.unlock();entry_.reset();
     }
   };
   explicit DeviceRegistry(SourceRuntime &runtime,SourceConfig config={}):runtime_(runtime),config_(config){}
@@ -57,6 +60,7 @@ class DeviceRegistry {
                    std::chrono::milliseconds budget=std::chrono::milliseconds(1000));
   void RetryPending(PPCContext &context,uint8_t *base);
   Lease Acquire(uint32_t device,bool continuation=false);
+  Lease AcquireIfOwned(uint32_t device,bool continuation,bool &owned);
   SourceRuntime &Memory(){return runtime_;}
   bool Contains(uint32_t device);
   uint32_t AllocateInline(uint32_t device,uint32_t words,uint32_t alignment);
@@ -70,7 +74,9 @@ class DeviceRegistry {
  private:
   SourceRuntime &runtime_;SourceConfig config_;
   std::mutex mutex_;
-  std::unordered_map<uint32_t,std::shared_ptr<Entry>> entries_;
+  std::vector<std::pair<uint32_t,std::shared_ptr<Entry>>> entries_;
+  std::atomic<uint32_t> fast_addr_{0};
+  std::atomic<Entry*> fast_entry_{nullptr};
   std::shared_ptr<Entry> Find(uint32_t device);
   bool Bind(const std::shared_ptr<Entry>&entry,uint32_t device);
   bool Retire(PPCContext &context,uint8_t *base,const std::shared_ptr<Entry>&entry,std::chrono::milliseconds budget);

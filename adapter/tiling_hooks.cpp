@@ -1,5 +1,6 @@
 #include "sdk_tiling_host.h"
 #include "device_registry.h"
+#include "perf_breakdown.h"
 #include <rex/ppc.h>
 #include <cstdio>
 #include <exception>
@@ -12,7 +13,13 @@ bool Owned(uint32_t device){return timeshift::renderer::DeviceLifecycleHooksEnab
 }
 REX_EXTERN(sub_8264B8C0){
   try {
-    if(Owned(ctx.r3.u32))timeshift::renderer::NativeBeginTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+    if(Owned(ctx.r3.u32)){
+      const uint64_t t0=timeshift::telemetry::NowTicks();
+      timeshift::renderer::NativeBeginTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      const uint64_t t1=timeshift::telemetry::NowTicks();
+      timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
+      timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);
+    }
     else __imp__sub_8264B8C0(ctx,base);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[tiling] BeginTiling EXCEPTION: %s\n", e.what());
@@ -21,7 +28,13 @@ REX_EXTERN(sub_8264B8C0){
 }
 REX_EXTERN(sub_8264BD58){
   try {
-    if(Owned(ctx.r3.u32))timeshift::renderer::NativeEndTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+    if(Owned(ctx.r3.u32)){
+      const uint64_t t0=timeshift::telemetry::NowTicks();
+      timeshift::renderer::NativeEndTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      const uint64_t t1=timeshift::telemetry::NowTicks();
+      timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
+      timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);
+    }
     else __imp__sub_8264BD58(ctx,base);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[tiling] EndTiling EXCEPTION: %s\n", e.what());
@@ -30,7 +43,13 @@ REX_EXTERN(sub_8264BD58){
 }
 REX_EXTERN(sub_8264B750){
   try {
-    if(Owned(ctx.r3.u32))timeshift::renderer::NativeSetPredication(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+    if(Owned(ctx.r3.u32)){
+      const uint64_t t0=timeshift::telemetry::NowTicks();
+      timeshift::renderer::NativeSetPredication(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      const uint64_t t1=timeshift::telemetry::NowTicks();
+      timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
+      timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);
+    }
     else __imp__sub_8264B750(ctx,base);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[tiling] SetPredication EXCEPTION: %s\n", e.what());

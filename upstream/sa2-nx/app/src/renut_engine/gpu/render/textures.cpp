@@ -14,6 +14,9 @@
 #include <xxhash.h>
 
 #include "renut_engine/gpu/banjo_renut_tuning.h"
+#if defined(TIMESHIFT_RECOMP)
+#include "perf_breakdown.h"
+#endif
 
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
@@ -249,14 +252,19 @@ constexpr uint32_t kSampleProbeBytes = 64;
 // read: eight spans, gathered and hashed at once. (32 spans hashed one at a
 // time were a tenth of the render thread.)
 uint64_t SampleHash(const TextureFetch &fetch, HostTexture &t) {
-  TextureGuestExtent(fetch, t.sample_pages, t.sample_sizes);
-  t.sample_known = true;
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick tex_sample_tick(timeshift::telemetry::g_tex_ticks_sample);
+#endif
+  KnowGuestExtent(fetch, t);
   alignas(64) uint8_t gathered[2 * (2 * kSampleEndBytes + kSampleProbes * kSampleProbeBytes) + 160];
   uint32_t at = 0;
 
-  // Include fetch descriptor dwords (tracks MinMipLevel / MaxMipLevel, format, sizes, etc.)
-  std::memcpy(gathered + at, fetch.dword, sizeof(fetch.dword));
-  at += sizeof(fetch.dword);
+  // Include masked descriptor dwords so sampler filter/clamp/aniso state never forces re-uploads.
+  u32 masked_desc[6];
+  for (int i = 0; i < 6; ++i)
+    masked_desc[i] = fetch.dword[i] & kDescMask[i];
+  std::memcpy(gathered + at, masked_desc, sizeof(masked_desc));
+  at += sizeof(masked_desc);
 
   // Directly include first 64 bytes of base_data
   if (fetch.BasePage()) {
@@ -436,6 +444,10 @@ std::vector<PendingFill> g_pending_fills;
 // Records the copies of every level into 't'. The guest data is read now, or
 // when the command list is submitted if 'defer_read'.
 bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick tex_upload_tick(timeshift::telemetry::g_tex_ticks_upload);
+  timeshift::telemetry::g_tex_upload_cnt.fetch_add(1, std::memory_order_relaxed);
+#endif
   FlushResolveMipsLocked(t);  // sa2-nx (2026-10-28, sa2_renut_lazy_resolve_mips): from the level 0 the resolves left
   ColourHandOverForgetLocked(t);  // sa2-nx (2026-10-28, sa2_renut_colour_handover): its content is the upload's now
   // banjo-nx (2026-10-19, render-thread proposal 1): the interval the guest bytes are read in: now, or at the next
@@ -493,6 +505,9 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
       UploadAllocation staging = s.uploads[s.frame].Allocate(uint64_t(slice_pitch) * d, 512);
       if (!staging)
         return false;
+#if defined(TIMESHIFT_RECOMP)
+      timeshift::telemetry::g_tex_upload_bytes.fetch_add(uint64_t(slice_pitch) * d, std::memory_order_relaxed);
+#endif
       auto *dst = static_cast<uint8_t *>(staging.cpu);
       if (defer_read)
         g_pending_fills.push_back({t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch});
@@ -549,6 +564,10 @@ uint32_t ExtraLevels(RenderScale scale) {
 bool Create(HostTexture &t, const TextureFetch &fetch, bool render_target,
             plume::RenderFormat rt_format, bool swap_red_blue = false, RenderScale scale = {},
             bool host_levels = false) {
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick tex_create_tick(timeshift::telemetry::g_tex_ticks_create);
+  timeshift::telemetry::g_tex_create_cnt.fetch_add(1, std::memory_order_relaxed);
+#endif
   ++g_texture_epoch;  // banjo-nx (CPU proposal 2)
   u32 width, height, depth;
   fetch.Size(width, height, depth);
@@ -907,7 +926,17 @@ void ApplyUnlocksLocked() {
 // - Otherwise the content is hashed at every check.
 // A write after the check shows the next frame.
 void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
+#if defined(TIMESHIFT_RECOMP)
+  timeshift::telemetry::ScopedTick tex_linear_tick(timeshift::telemetry::g_tex_ticks_linear);
+#endif
   ApplyUnlocksLocked();
+#if defined(TIMESHIFT_RECOMP)
+  KnowGuestExtent(fetch, t);
+  const uint64_t extent_bytes = uint64_t(t.sample_sizes[0]) + t.sample_sizes[1];
+  const bool sampled_linear = extent_bytes > 16384u;
+#else
+  constexpr bool sampled_linear = false;
+#endif
   auto upload = [&](uint64_t hash) {
     t.content_hash = hash;
     t.uploaded = Upload(t, fetch, true);
@@ -915,14 +944,14 @@ void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
   const bool verify_due = g_frame - t.verified_frame >= kLinearVerifyFrames;
   // banjo-nx (2026-10-19, render-thread proposal 1): every hash through CheckedHash (the cards).
   if (!t.uploaded) {
-    upload(CheckedHash(fetch, t, false));
+    upload(CheckedHash(fetch, t, sampled_linear));
     t.verified_frame = g_frame;
   } else if (t.lock_driven) {
     const bool watched = g_frame - t.unlock_frame < kUnlockWatchFrames;
     if (t.unlocked) {
-      upload(CheckedHash(fetch, t, false));
+      upload(CheckedHash(fetch, t, sampled_linear));
     } else if (watched || verify_due) {
-      const uint64_t hash = CheckedHash(fetch, t, false);
+      const uint64_t hash = CheckedHash(fetch, t, sampled_linear);
       if (hash != t.content_hash) {
         upload(hash);
         t.lock_driven = watched;
@@ -932,7 +961,7 @@ void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
     }
   } else if (t.dynamic) {
     if (verify_due) {
-      const uint64_t hash = CheckedHash(fetch, t, false);
+      const uint64_t hash = CheckedHash(fetch, t, sampled_linear);
       t.dynamic = hash != t.content_hash;
       t.changes = 0;
       t.content_hash = hash;
@@ -952,7 +981,16 @@ void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
       t.uploaded = Upload(t, fetch, true);
     }
   } else {
-    const uint64_t hash = CheckedHash(fetch, t, false);
+#if defined(TIMESHIFT_RECOMP)
+    if (t.changes == 0 && t.verified_frame != 0 && !t.unlocked && sampled_linear) {
+      const auto age = g_frame - t.verified_frame;
+      if (age >= 4 && (((t.guest_va >> 4) + g_frame) & 15u) != 0) {
+        t.unlocked = false;
+        return;
+      }
+    }
+#endif
+    const uint64_t hash = CheckedHash(fetch, t, sampled_linear);
     if (hash != t.content_hash) {
       upload(hash);
       t.dynamic = ++t.changes >= kDynamicChanges;
@@ -1274,8 +1312,16 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
       resolved->used_frame = g_frame;
       if (resolved->words)
         banjo::renut_gpu::CountDepthFloatSampled();  // banjo-nx (2026-10-18): a depth resolve's float target sampled
+#if defined(TIMESHIFT_RECOMP)
+      {
+        timeshift::telemetry::ScopedTick tex_ho_read(timeshift::telemetry::g_tex_ticks_handover);
+        ColourHandOverBeforeReadLocked(*resolved);  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
+        FlushResolveMipsLocked(*resolved);  // sa2-nx (2026-10-28, sa2_renut_lazy_resolve_mips)
+      }
+#else
       ColourHandOverBeforeReadLocked(*resolved);  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
       FlushResolveMipsLocked(*resolved);  // sa2-nx (2026-10-28, sa2_renut_lazy_resolve_mips)
+#endif
       TransitionTextureLocked(resolved, plume::RenderTextureLayout::SHADER_READ);
       if (fx) {
         fx->transition[0] = resolved;
@@ -1283,19 +1329,26 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
       }
       binding.dimension = resolved->dimension;
       binding.slot = SlotForSwizzle(*resolved, swizzle);
-      // banjo-nx (2026-10-19, banjo_deko3d_depth_handover): its content where it is.
-      if (resolved->handed_from || resolved->held_current) {
-        const uint32_t handed = DepthHandOverSlotLocked(
-            *resolved, SwizzleMapping(swizzle, resolved->view_swap_red_blue, resolved->host_format), fx);
-        if (handed != UINT32_MAX)
-          binding.slot = handed;
+#if defined(TIMESHIFT_RECOMP)
+      {
+        timeshift::telemetry::ScopedTick tex_ho_slot(timeshift::telemetry::g_tex_ticks_handover);
+#endif
+        // banjo-nx (2026-10-19, banjo_deko3d_depth_handover): its content where it is.
+        if (resolved->handed_from || resolved->held_current) {
+          const uint32_t handed = DepthHandOverSlotLocked(
+              *resolved, SwizzleMapping(swizzle, resolved->view_swap_red_blue, resolved->host_format), fx);
+          if (handed != UINT32_MAX)
+            binding.slot = handed;
+        }
+        if (resolved->colour_from || resolved->colour_current) {  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
+          const uint32_t handed = ColourHandOverSlotLocked(
+              *resolved, SwizzleMapping(swizzle, resolved->view_swap_red_blue, resolved->host_format), fx);
+          if (handed != UINT32_MAX)
+            binding.slot = handed;
+        }
+#if defined(TIMESHIFT_RECOMP)
       }
-      if (resolved->colour_from || resolved->colour_current) {  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
-        const uint32_t handed = ColourHandOverSlotLocked(
-            *resolved, SwizzleMapping(swizzle, resolved->view_swap_red_blue, resolved->host_format), fx);
-        if (handed != UINT32_MAX)
-          binding.slot = handed;
-      }
+#endif
       binding.stacked = resolved->stacked;
       binding.scale = resolved->scale;
       binding.lod_scale = resolved->extra_levels ? resolved->scale : RenderScale{};
@@ -1430,8 +1483,16 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
                   g_frame, texture_va, t.width, t.height, u32(fetch.Format()), fetch.Tiled() ? ", tiled" : "");
     }
   }
+#if defined(TIMESHIFT_RECOMP)
+  {
+    timeshift::telemetry::ScopedTick tex_ho_read(timeshift::telemetry::g_tex_ticks_handover);
+    ColourHandOverBeforeReadLocked(t);  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
+    FlushResolveMipsLocked(t);  // sa2-nx (2026-10-28, sa2_renut_lazy_resolve_mips)
+  }
+#else
   ColourHandOverBeforeReadLocked(t);  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
   FlushResolveMipsLocked(t);  // sa2-nx (2026-10-28, sa2_renut_lazy_resolve_mips)
+#endif
   TransitionTextureLocked(&t, plume::RenderTextureLayout::SHADER_READ);
   if (t.words)
     banjo::renut_gpu::CountDepthFloatSampled();  // banjo-nx (2026-10-18): a depth resolve's float target sampled
@@ -1441,19 +1502,26 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
   }
   binding.dimension = t.dimension;
   binding.slot = SlotForSwizzle(t, swizzle);
-  // banjo-nx (2026-10-19, banjo_deko3d_depth_handover): its content where it is.
-  if (t.handed_from || t.held_current) {
-    const uint32_t handed = DepthHandOverSlotLocked(
-        t, SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format), fx);
-    if (handed != UINT32_MAX)
-      binding.slot = handed;
+#if defined(TIMESHIFT_RECOMP)
+  {
+    timeshift::telemetry::ScopedTick tex_ho_slot(timeshift::telemetry::g_tex_ticks_handover);
+#endif
+    // banjo-nx (2026-10-19, banjo_deko3d_depth_handover): its content where it is.
+    if (t.handed_from || t.held_current) {
+      const uint32_t handed = DepthHandOverSlotLocked(
+          t, SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format), fx);
+      if (handed != UINT32_MAX)
+        binding.slot = handed;
+    }
+    if (t.colour_from || t.colour_current) {  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
+      const uint32_t handed = ColourHandOverSlotLocked(
+          t, SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format), fx);
+      if (handed != UINT32_MAX)
+        binding.slot = handed;
+    }
+#if defined(TIMESHIFT_RECOMP)
   }
-  if (t.colour_from || t.colour_current) {  // sa2-nx (2026-10-28, sa2_renut_colour_handover)
-    const uint32_t handed = ColourHandOverSlotLocked(
-        t, SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format), fx);
-    if (handed != UINT32_MAX)
-      binding.slot = handed;
-  }
+#endif
   binding.stacked = t.stacked;
   binding.scale = t.scale;
   binding.lod_scale = t.extra_levels ? t.scale : RenderScale{};
@@ -2002,7 +2070,7 @@ uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale, b
                           : plume::RenderMipmapMode::LINEAR;
     // MaxAnisotropy stores 2..5 for ratios 2:1..16:1 (its table at 0x82003E38).
     const uint32_t aniso = fetch.Anisotropy();
-    const uint32_t min_anisotropy = std::max(MinAnisotropy(), 16u);
+    const uint32_t min_anisotropy = MinAnisotropy();
     const uint32_t guest_aniso = (aniso > 1 && aniso <= 5) ? (1u << (aniso - 1)) : 1u;
     const uint32_t max_aniso = std::max(min_anisotropy, guest_aniso);
     desc.anisotropyEnabled = (max_aniso > 1) && (effective_max_mip > min_mip_level);

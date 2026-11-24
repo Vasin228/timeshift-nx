@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include "renut_engine/gpu/backend/queued.h"
+#include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/guest/callbacks.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
@@ -41,6 +42,13 @@ void Color(uint32_t address,float color[4]){
 void FlushPendingDraw(uint32_t device){
   FlushDeferredVertices(device);
   RunReadyCallbacks();
+}
+uint64_t ConsumeImmediatePending(uint32_t device){
+  auto *d=GuestPtr<d3d::Device>(device);
+  if(!d)return 0;
+  const uint64_t p2=uint64_t(d->m_Pending[2]);
+  for(auto &mask:d->m_Pending)mask=0;
+  return p2;
 }
 void DrawIndexed(uint32_t device,uint32_t primitive,int32_t base,uint32_t start,uint32_t count){
   RequireImmediateDevice(device);

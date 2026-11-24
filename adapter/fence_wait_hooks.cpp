@@ -1,4 +1,5 @@
 #include "device_registry.h"
+#include "perf_breakdown.h"
 #include <rex/ppc.h>
 #include <chrono>
 #include <cstdio>
@@ -25,6 +26,7 @@ REX_EXTERN(sub_8264ED40){
       if(registry.Contains(ctx.r3.u32)){
         auto lease=registry.Acquire(ctx.r3.u32,true);
         if(!lease)throw std::logic_error("fence wait on an unavailable owned device");
+        timeshift::telemetry::FenceWaitScope wait_scope;
         const auto tag=registry.Memory().Read(ctx.r3.u32+10908,4);
         if(tag.size()!=4)throw std::logic_error("owned fence tag unavailable");
         const uint32_t current=uint32_t(tag[0])<<24|uint32_t(tag[1])<<16|uint32_t(tag[2])<<8|tag[3];
@@ -58,6 +60,7 @@ REX_EXTERN(sub_82647528){
         if(registry.Contains(device)){
           auto lease=registry.Acquire(device,true);
           if(!lease)throw std::logic_error("wait poll on an unavailable owned device");
+          timeshift::telemetry::FenceWaitScope wait_scope;
           registry.Memory().RunCallbacks();
           const auto prior=registry.Memory().Read(ctx.r3.u32+8,4);
           if(prior.size()!=4)throw std::logic_error("owned wait state unavailable");

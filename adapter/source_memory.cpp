@@ -1,4 +1,5 @@
 #include "source_memory.h"
+#include "perf_breakdown.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -109,10 +110,13 @@ bool DeviceSources::Wait(uint32_t fence,std::chrono::milliseconds budget){
   if(!device_||faulted_)return false;
   if(fence==next_tag_){if(segment_)return false;if(!Submit())return false;}
   const auto end=std::chrono::steady_clock::now()+budget;
-  while(Pending(fence)){
-    runtime_.RunCallbacks();if(!Pending(fence))break;
-    auto left=std::chrono::duration_cast<std::chrono::milliseconds>(end-std::chrono::steady_clock::now());
-    if(left.count()<=0||!runtime_.WaitProgress(std::min(left,std::chrono::milliseconds(10))))return false;
+  if(Pending(fence)){
+    timeshift::telemetry::FenceWaitScope wait_scope;
+    while(Pending(fence)){
+      runtime_.RunCallbacks();if(!Pending(fence))break;
+      auto left=std::chrono::duration_cast<std::chrono::milliseconds>(end-std::chrono::steady_clock::now());
+      if(left.count()<=0||!runtime_.WaitProgress(std::min(left,std::chrono::milliseconds(10))))return false;
+    }
   }
   Collect();return true;
 }

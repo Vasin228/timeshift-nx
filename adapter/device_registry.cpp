@@ -28,11 +28,29 @@ bool HasResources(std::span<const uint8_t> p,bool include_cpu_helper=true){
 }
 }
 std::shared_ptr<DeviceRegistry::Entry> DeviceRegistry::Find(uint32_t device){
-  std::lock_guard lock(mutex_);auto it=entries_.find(device);return it==entries_.end()?nullptr:it->second;
+  std::lock_guard lock(mutex_);
+  for(const auto &[addr,e]:entries_)if(addr==device)return e;
+  return nullptr;
 }
 bool DeviceRegistry::Contains(uint32_t device){return bool(Find(device));}
 DeviceRegistry::Lease DeviceRegistry::Acquire(uint32_t device,bool continuation){
-  auto p=Find(device);if(!p)return {};
+  bool owned=false;
+  return AcquireIfOwned(device,continuation,owned);
+}
+DeviceRegistry::Lease DeviceRegistry::AcquireIfOwned(uint32_t device,bool continuation,bool &owned){
+  if(!continuation && fast_addr_.load(std::memory_order_acquire)==device){
+    if(Entry *fe=fast_entry_.load(std::memory_order_acquire)){
+      std::unique_lock<std::recursive_mutex> lk(fe->serial);
+      if(fe->address==device && fe->phase==Phase::Active){
+        ++fe->leases;
+        owned=true;
+        return Lease(fe,std::move(lk),true);
+      }
+    }
+  }
+  auto p=Find(device);
+  owned=bool(p);
+  if(!p)return {};
   Lease lease(p);
   if(p->phase==Phase::Active||(p->phase==Phase::Creating&&p->creator==std::this_thread::get_id())||
      (continuation&&p->leases&&(p->phase==Phase::Quarantined||
@@ -47,15 +65,26 @@ bool DeviceRegistry::Bind(const std::shared_ptr<Entry>&e,uint32_t device){
   if(!e->sources.Attach(device))return false;
   if(e->title)e->global=Word(runtime_.Read(d3d6274::kGlobalDeviceImport,4));
   std::lock_guard lock(mutex_);
-  if(!entries_.emplace(device,e).second)throw std::logic_error("duplicate live device address");
+  for(const auto &[addr,_]:entries_)if(addr==device)throw std::logic_error("duplicate live device address");
+  entries_.emplace_back(device,e);
+  if(entries_.size()!=1){fast_addr_.store(0,std::memory_order_release);fast_entry_.store(nullptr,std::memory_order_release);}
   return true;
 }
 void DeviceRegistry::Erase(const std::shared_ptr<Entry>&e){
-  std::lock_guard lock(mutex_);auto it=entries_.find(e->address);
-  if(it!=entries_.end()&&it->second==e)entries_.erase(it);
+  fast_addr_.store(0,std::memory_order_release);
+  fast_entry_.store(nullptr,std::memory_order_release);
+  std::lock_guard lock(mutex_);
+  for(auto it=entries_.begin();it!=entries_.end();++it){
+    if(it->first==e->address){
+      if(it->second==e)entries_.erase(it);
+      break;
+    }
+  }
   e->phase=Phase::Retired;
 }
 bool DeviceRegistry::Retire(PPCContext &context,uint8_t *base,const std::shared_ptr<Entry>&e,std::chrono::milliseconds budget){
+  fast_addr_.store(0,std::memory_order_release);
+  fast_entry_.store(nullptr,std::memory_order_release);
   auto device=runtime_.Map(e->address,22400);
   if(device.size()!=22400)throw std::logic_error("retiring device disappeared");
   e->phase=Phase::Closing;
@@ -118,6 +147,13 @@ uint32_t DeviceRegistry::Create(PPCContext &context,uint8_t *base){
   if(result.hresult==0){
     if(e->phase!=Phase::Creating||e->address!=result.device)throw std::logic_error("device bootstrap did not bind ownership");
     e->phase=Phase::Active;
+    {
+      std::lock_guard lock(mutex_);
+      if(entries_.size()==1 && entries_[0].second==e){
+        fast_entry_.store(e.get(),std::memory_order_release);
+        fast_addr_.store(e->address,std::memory_order_release);
+      }
+    }
     runtime_.DeviceActivated(e->address,e->title);
   }
   return result.hresult;

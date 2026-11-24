@@ -15,6 +15,7 @@ set(PLUME_SWITCH_NO_NVK ON CACHE BOOL "" FORCE)
 set(PLUME_DEKO3D ON CACHE BOOL "" FORCE)
 set(PLUME_SWITCH_UAM_DIR "${TS_UP}/thirdparty/uam" CACHE PATH "" FORCE)
 add_subdirectory("${TS_UP}/thirdparty/plume" "${CMAKE_BINARY_DIR}/plume")
+target_compile_options(plume PRIVATE -O3)
 
 # Decoder copies must match XenosRecomp's cache ABI.
 file(GLOB ts_zstd_sources "${TS_TRANSLATOR}/thirdparty/zstd/lib/common/*.c"
@@ -56,6 +57,7 @@ target_include_directories(timeshift_renut_core PRIVATE
     "${TS_SDK_THIRDPARTY}/o1heap/o1heap"
     "${TS_TRANSLATOR}/XenosRecomp")
 target_link_libraries(timeshift_renut_core PRIVATE plume ts_renut_zstd ts_renut_smolv ts_renut_xxhash)
+target_compile_options(timeshift_renut_core PRIVATE -O3 -fno-math-errno -ffp-contract=fast)
 # This SDK has its own xxHash; the shader cache's version must win for ReNut.
 target_include_directories(timeshift_renut_core BEFORE PRIVATE "${TS_TRANSLATOR}/thirdparty/xxHash")
 
@@ -71,6 +73,7 @@ get_target_property(ts_core_defines timeshift_renut_core COMPILE_DEFINITIONS)
 target_include_directories(timeshift_renut_resource_hooks PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_resource_hooks PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_resource_hooks PRIVATE plume ts_renut_zstd ts_renut_smolv ts_renut_xxhash)
+target_compile_options(timeshift_renut_resource_hooks PRIVATE -O3)
 
 add_library(timeshift_renut_device_calls OBJECT
     "${TS_ROOT}/adapter/device_bootstrap.cpp"
@@ -78,6 +81,7 @@ add_library(timeshift_renut_device_calls OBJECT
 target_include_directories(timeshift_renut_device_calls PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_device_calls PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_device_calls PRIVATE plume)
+target_compile_options(timeshift_renut_device_calls PRIVATE -O3)
 
 add_library(timeshift_renut_draw_hooks OBJECT
     "${TS_ROOT}/adapter/draw_hooks.cpp"
@@ -85,6 +89,7 @@ add_library(timeshift_renut_draw_hooks OBJECT
 target_include_directories(timeshift_renut_draw_hooks PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_draw_hooks PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_draw_hooks PRIVATE plume)
+target_compile_options(timeshift_renut_draw_hooks PRIVATE -O3)
 
 # Native TimeShift tiling CPU protocol and SDK argument bridge. Concrete SDK
 # services and dormant Begin/End/predication entries are a separate target below.
@@ -94,6 +99,7 @@ add_library(timeshift_renut_tiling OBJECT
 target_include_directories(timeshift_renut_tiling PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_tiling PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_tiling PRIVATE plume)
+target_compile_options(timeshift_renut_tiling PRIVATE -O3)
 
 add_library(timeshift_renut_sources OBJECT
     "${TS_ROOT}/adapter/source_memory.cpp"
@@ -101,6 +107,7 @@ add_library(timeshift_renut_sources OBJECT
 target_include_directories(timeshift_renut_sources PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_sources PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_sources PRIVATE plume)
+target_compile_options(timeshift_renut_sources PRIVATE -O3)
 
 add_library(timeshift_renut_lifecycle OBJECT
     "${TS_ROOT}/adapter/device_registry.cpp"
@@ -109,6 +116,7 @@ add_library(timeshift_renut_lifecycle OBJECT
 target_include_directories(timeshift_renut_lifecycle PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_lifecycle PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_lifecycle PRIVATE plume)
+target_compile_options(timeshift_renut_lifecycle PRIVATE -O3)
 
 add_library(timeshift_renut_sdk_tiling OBJECT
     "${TS_ROOT}/adapter/sdk_tiling_host.cpp"
@@ -116,44 +124,49 @@ add_library(timeshift_renut_sdk_tiling OBJECT
 target_include_directories(timeshift_renut_sdk_tiling PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_sdk_tiling PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_sdk_tiling PRIVATE plume)
+target_compile_options(timeshift_renut_sdk_tiling PRIVATE -O3)
 
 add_library(timeshift_renut_fence_query OBJECT "${TS_ROOT}/adapter/fence_query_hooks.cpp")
 target_include_directories(timeshift_renut_fence_query PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_fence_query PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_fence_query PRIVATE plume)
+target_compile_options(timeshift_renut_fence_query PRIVATE -O3)
 
 add_library(timeshift_renut_fence_wait OBJECT
     "${TS_ROOT}/adapter/fence_read.cpp" "${TS_ROOT}/adapter/fence_wait_hooks.cpp")
 target_include_directories(timeshift_renut_fence_wait PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_fence_wait PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_fence_wait PRIVATE plume)
+target_compile_options(timeshift_renut_fence_wait PRIVATE -O3)
 
-# Compile the actual three private generated chunks affected by the six-load
-# interposition. The Windows port tool verifies owned frozen source beforehand.
+# Compile all 161 private generated guest chunks at -O3 -fno-strict-aliasing.
+# The Windows port tool verifies owned frozen source beforehand.
 # These original guest symbols remain separate from the native-hook audit.
-add_library(timeshift_renut_guest_wait OBJECT
-    "${TS_ROOT}/private/app/generated/default/timeshift_recomp.2.cpp"
-    "${TS_ROOT}/private/app/generated/default/timeshift_recomp.78.cpp"
-    "${TS_ROOT}/private/app/generated/default/timeshift_recomp.153.cpp")
+file(GLOB ts_recomp_sources CONFIGURE_DEPENDS
+    "${TS_ROOT}/private/app/generated/default/timeshift_recomp.*.cpp")
+add_library(timeshift_renut_guest_wait OBJECT ${ts_recomp_sources})
 target_include_directories(timeshift_renut_guest_wait PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_guest_wait PRIVATE ${ts_core_defines})
-target_compile_options(timeshift_renut_guest_wait PRIVATE -O2 -fno-strict-aliasing)
+target_compile_options(timeshift_renut_guest_wait PRIVATE -O3 -fno-strict-aliasing -fno-math-errno -ffp-contract=fast)
 
 add_library(timeshift_renut_device_cleanup OBJECT
     "${TS_ROOT}/adapter/device_cleanup.cpp" "${TS_ROOT}/adapter/device_cleanup_runtime.cpp")
 target_include_directories(timeshift_renut_device_cleanup PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_device_cleanup PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_device_cleanup PRIVATE plume)
+target_compile_options(timeshift_renut_device_cleanup PRIVATE -O3)
 
 add_library(timeshift_renut_callback_hooks OBJECT
     "${TS_ROOT}/adapter/callback_hooks.cpp")
 target_include_directories(timeshift_renut_callback_hooks PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_callback_hooks PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_callback_hooks PRIVATE plume)
+target_compile_options(timeshift_renut_callback_hooks PRIVATE -O3)
 
 add_library(timeshift_renut_presentation_hooks OBJECT
     "${TS_ROOT}/adapter/presentation_hooks.cpp")
 target_include_directories(timeshift_renut_presentation_hooks PRIVATE ${ts_core_includes})
 target_compile_definitions(timeshift_renut_presentation_hooks PRIVATE ${ts_core_defines})
 target_link_libraries(timeshift_renut_presentation_hooks PRIVATE plume)
+target_compile_options(timeshift_renut_presentation_hooks PRIVATE -O3)
 

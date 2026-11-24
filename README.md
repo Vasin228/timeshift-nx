@@ -6,22 +6,22 @@
 
 Releasing the project as-is.
 
-I am not a professional programmer - I built this port with the help of AI tools. The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. However, performance currently hovers around 10-15 FPS on retail hardware (optimization needed).
+I am not a professional programmer - I built this port with the help of AI tools. The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. Gameplay runs at ~25-35+ FPS at 720p on retail hardware after CPU/GPU optimization passes, while **audio quality is currently poor/broken and has not been fixed yet**.
 
-If you have experience with low-level Switch development (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) or Switch audio and would like to help improve the port or optimize performance, you are welcome to contribute! Send your improvements via Pull Requests: working PRs will be gladly reviewed and merged so the port continues to evolve.
+If you have experience with low-level Switch development (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) or Switch audio and would like to help improve audio or optimize performance further, you are welcome to contribute! Send your improvements via Pull Requests: working PRs will be gladly reviewed and merged so the port continues to evolve.
 
 ---
 
 ## Project Completion Status
 
-Overall Port Readiness: **`[████████░░] 80%`**
+Overall Port Readiness: **`[████████░░] 85%`**
 
 | Subsystem | Progress | Status |
 |---|---|---|
-| **Core, Memory, Saves & Controls** | `█████████░` **95%** | Static recompilation, 2.4 GB heap, saves/checkpoints, Joy-Con/Pro, time powers |
-| **Graphics & Shaders (`deko3d`)** | `█████████░` **95%** | `4,887` clean shaders, sharp mipmaps/POM (`GetTextureGradients`), working fire/smoke/explosion soft particles, zero glow/flicker |
-| **Audio (`XMA2` / `audout`)** | `███████░░░` **75%** | Clean music/voices/ambient; *stutters during heavy multi-channel combat* |
-| **Performance (Switch Hardware)** | `████░░░░░░` **40%** | Playable at `~10-15 FPS` (`1280x720`); *needs GPU/render-thread & resolve optimization for `30 FPS`* |
+| **Core, Memory, Saves & Controls** | `█████████░` **95%** | Static recompilation, 2.4–3.0 GB heap, `o1heap`, saves/checkpoints, Joy-Con/Pro, time powers |
+| **Graphics & Shaders (`deko3d`)** | `██████████` **98%** | `5,403` GLSL / `6,287` `uam`-compiled shaders across campaign levels, sharp mipmaps/POM, soft particles, `Hold +` overlay menu |
+| **Audio (`XMA2` / `audout`)** | `███░░░░░░░` **30%** | *Currently sounds terrible (crackling/distortion/stuttering) — not yet worked on* |
+| **Performance (Switch Hardware)** | `████████░░` **80%** | Playable `~25-35+ FPS` (`1280x720`) via `-O3`, 4-core pinning, ZCull, lock-free registry & D3D ring bypass |
 
 ---
 
@@ -29,19 +29,19 @@ Overall Port Readiness: **`[████████░░] 80%`**
 
 - **Static Recompilation:** Original Xbox 360 guest code compiled directly to 64-bit ARM (AArch64) for Horizon OS.
 - **Native Renderer:** Runs via Nintendo Switch native `deko3d` API (direct hardware access to Tegra X1 GPU).
-- **Sharp Textures & Clean Shaders:** Full `4,887`-shader single-pass cache (`0` offset collisions) + Xenos `GetTextureGradients` support restoring high-resolution mipmaps and Parallax Occlusion Mapping (`box_01`, walls, floors) with zero glowing or flickering objects.
+- **Complete Campaign Shader Cache & Sharp Textures:** `5,403` translated GLSL shaders and `6,287` patched-`uam` `DKSH` binaries (`deko3d_shaders_f0.bin`, `0` missing in tested areas) + Xenos `GetTextureGradients` support restoring high-resolution mipmaps and Parallax Occlusion Mapping with zero glowing or flickering objects.
 - **Fire, Smoke & Explosions (Soft Particles):** Conditional EDRAM 4xMSAA aliasing (`640x360` soft-particle buffers onto `1280x720` targets) restores campfires, volumetric smoke, grenades, and explosion effects with intact 1:1 camera framing.
-- **Custom Homebrew Packaging:** Embedded `256x256` Beta Suit icon (`assets/icon.jpg`) and Switch NACP metadata (`TimeShift` / `vasin228` / `1.0.0`) for `hbmenu`.
+- **In-Game Graphics & Level Menu (`Hold +`):** Real-time FPS/GPU HUD, toggles for shadows, draw distance, VSync, anisotropic filtering, D3D ring bypass, ZCull, depth compression, and a 24-level campaign `LEVEL JUMP` selector.
 - **Save System & Checkpoints:** Fully implemented and working! Profile saves, new game autosaves, and in-game checkpoints are created and loaded properly on Horizon OS SD card storage (`sdmc:/switch/timeshift/user/`).
-- **Intro Cutscenes:** Bink Video playback works without audio/video glitches.
+- **Intro Cutscenes:** Bink Video playback works.
 - **UI & Menus:** Main menu, options, profile save/load, pause screen are all working.
-- **In-Game Gameplay:** Levels load and play (tested on `city_part01`) without crashes.
+- **In-Game Gameplay:** Campaign levels load and play cleanly.
 - **Controls & Input:** Full support for Joy-Cons and Pro Controller (simultaneous dual-input for handheld and docked play).
 - **Suit Abilities:** Slow time, time stop, and time rewind affect the world and physics correctly.
 - **Weather & Storm Occlusion:** Atmospheric lightning flashes and volume light properly occluded inside rooms (fixed by Oleksa126).
 - **Auto-Sleep Inhibition:** Screen dimming and auto-sleep are disabled during gameplay.
-- **Memory Management:** Up to 2.4 GB dynamic process heap with backing memory granule recycling.
-- **Performance:** Currently runs at ~10-15 FPS on retail Switch hardware (optimization needed).
+- **Memory Management:** Dynamic process heap with native ARM64 `o1heap` guest allocator and backing memory granule recycling.
+- **Performance:** Playable ~25-35+ FPS at 720p on retail Switch hardware.
 
 ---
 
@@ -49,16 +49,14 @@ Overall Port Readiness: **`[████████░░] 80%`**
 
 If anyone decides to pick this up, here are the main remaining areas that need attention:
 
-### 1. Performance / Framerate Optimization (~10-15 FPS)
-* **Symptom:** The game runs at approximately 10-15 FPS during gameplay on physical Switch hardware.
-* **Technical details:** Needs command list batching, reducing redundant pipeline switches, optimizing EDRAM resolves and vertex/index buffer uploads, and profiling Tegra X1 GPU bottlenecks.
+### 1. Poor Audio Quality (Not Yet Fixed)
+* **Symptom:** In-game audio currently sounds terrible (heavy distortion, crackling, and stuttering), especially during gameplay and multi-channel combat. We have not worked on fixing audio yet.
+* **Technical details:** XMA2 decoder (`private/sdk/src/audio/xma_decoder.cpp`) and `AudioWorker` / `audout` buffering (`private/sdk/src/audio/audio_system.cpp`). Needs proper XMA2 stream/frame decoding and asynchronous offloaded mixing.
 
-### 2. Audio Stuttering During Combat and Explosions
-* **Symptom:** Ambient music, footsteps, and quiet scenes sound clean. However, during heavy combat with grenade explosions and rapid gunfire, sound starts stuttering or causing frame hitches.
-* **Technical details:** XMA2 decoder (`private/sdk/src/audio/xma_decoder.cpp`). When multiple sound channels trigger simultaneously, the engine attempts to decode them synchronously inside the `AudioWorker` thread, exceeding the frame deadline. Needs asynchronous offloading to a worker thread on an idle core (Core 0 or Core 3).
-* **Relevant files:** `private/sdk/src/audio/xma_decoder.cpp`, `private/sdk/src/audio/audio_system.cpp`.
+### 2. Further Performance Headroom in Heavy Scenes
+* **Symptom:** Heavy outdoor combat scenes with 600–700+ draw calls can still dip below 30 FPS when full shadows are enabled (toggleable via `Hold +` menu).
 
-*(Previously listed Issue "Textures Stuck at Low LOD / Mipmap Levels" & glowing/flickering objects were **RESOLVED** in Part 270 via `XenosRecomp` `GetTextureGradients` implementation and clean single-pass 4,887-shader cache rebuild. Fire, smoke, and grenade explosion soft particles were **RESOLVED** in Parts 271–272 via conditional EDRAM 4xMSAA aliasing (`surfaces.h`, `surfaces.cpp`, `draw.cpp`).)*
+*(Previously listed texture LOD, glowing/flickering objects, black silhouettes, shadow dashes, and `10-15 FPS` bottlenecks were addressed in Parts 270–290 via `GetTextureGradients`, conditional EDRAM 4xMSAA aliasing, `5,403`-shader patched-`uam` rebuild, depth-compression control, `-O3`, 4-core pinning, ZCull, lock-free `DeviceRegistry`, and `renut_skip_orig_d3d`.)*
 
 ---
 
@@ -66,13 +64,13 @@ If anyone decides to pick this up, here are the main remaining areas that need a
 
 ```
 timeshift-nx/
-|-- adapter/              # C++ adapter layer bridging game calls to deko3d
+|-- adapter/              # C++ adapter layer bridging game calls to deko3d & Switch
 |   |-- timeshift_app.cpp          # Application lifecycle and initialization
-|   |-- renut_tuning_shims.cpp     # Depth, ZCull, EDRAM format configuration
-|   |-- draw_hooks.cpp             # Render pass interception
+|   |-- renut_tuning_shims.cpp     # Depth, ZCull, Hold+ menu, level-jump & EDRAM hooks
+|   |-- perf_breakdown.h           # Telemetry HUD & campaign level table
+|   |-- draw_hooks.cpp             # Render pass interception & D3D bypass
 |   `-- tiling_hooks.cpp           # XGraphics texture tiling hooks
-|-- assets/icon.jpg       # Custom 256x256 hbmenu icon
-|-- upstream/sa2-nx/      # renut_engine runtime (deko3d backend, shader translator)
+|-- upstream/sa2-nx/      # renut_engine runtime (deko3d backend, shader translator, overlay)
 |-- private/              # SDK (audio, kernel, memory) and recompiled C++ sources
 |   |-- app/generated/             # Recompiled game code (timeshift_recomp.*.cpp)
 |   `-- sdk/                       # rexglue (audio, kernel, memory)
@@ -80,8 +78,8 @@ timeshift-nx/
 |   |-- build_switch_app.py        # Links timeshift.nro
 |   |-- prepare_switch_cache.py    # Prepares shaders and assets
 |   `-- deploy_candidate.py        # Deploys to Switch via FTP
-|-- MODLOG.md             # Development chronicle (Parts 266-272; earlier in archives)
-|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (5,772 records)
+|-- MODLOG.md             # Development chronicle (Parts 270-290; earlier in archives)
+|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (6,287 records)
 `-- timeshift.toml        # Game configuration file for Switch
 ```
 

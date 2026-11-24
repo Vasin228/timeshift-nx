@@ -940,9 +940,10 @@ namespace plume {
         // banjo-nx (2026-10-18): deko3d drops the Zcull data only when another depth target is bound; a copy into the
         // bound one (the copy engine does not update Zcull) leaves it describing the old depth, which would cull draws
         // the new depth passes.
-        if (Deko3DGetOptions().zcull && (dst->desc.flags & RenderTextureFlag::DEPTH_TARGET))
+        if (Deko3DGetOptions().zcull && (dst->desc.flags & RenderTextureFlag::DEPTH_TARGET)) {
             flushBarriers();
             dkCmdBufBarrier(cmd, DkBarrier_None, DkInvalidateFlags_Zcull);
+        }
     }
 
     void Deko3DCommandList::copyBuffer(const RenderBuffer *dst, const RenderBuffer *src) {
