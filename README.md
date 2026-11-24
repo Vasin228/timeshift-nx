@@ -1,5 +1,7 @@
 [English](README.md) | [Русский](README_RU.md)
 
+![TimeShift for Nintendo Switch](assets/banner.jpg)
+
 # timeshift-nx
 
 **TimeShift** (Xbox 360 version) native port for **Nintendo Switch** using static recompilation and the native `deko3d` graphics API.
@@ -127,6 +129,28 @@ timeshift-nx/
 3. **Launch ONLY via Title Override:**  
    Hold **R** while launching any installed retail game on your Switch to open hbmenu with full memory access.  
    *Do NOT launch via the Album (Applet Mode), or the game will crash due to out-of-memory errors!*
+
+---
+
+## In-Game Graphics & Level Menu (`Hold +`)
+
+Hold **`+`** for ~0.5 seconds at any time (main menu or in-game) to open the **RENUT GRAPHICS MENU**.  
+*(A quick tap of `+` still opens the normal game pause menu.)*
+
+- **Controls:** `D-Pad Up/Down` to move, `D-Pad Left/Right` or `A` to change, `B` or `Hold +` to close.
+
+| Option | Values | Description |
+|---|---|---|
+| **FPS HUD** | `ON` / `OFF` | Shows/hides real-time FPS, min FPS, frame time, and GPU time at the top |
+| **SHADOWS 1024** | `ON` / `OFF` | Toggles dynamic 1024x1024 shadow maps (turn `OFF` for extra FPS in heavy scenes) |
+| **DRAW DIST** | `MAX`, `200M`, `120M`, `80M`, `55M`, `40M` | Caps camera far-plane draw distance |
+| **VSYNC** | `ON` / `OFF` | Toggles vertical synchronization |
+| **ANISO FILTER** | `Game`, `2x`, `4x`, `8x` | Anisotropic texture filtering level |
+| **SKIP D3D COPY** | `ON` / `OFF` | Bypasses redundant original Xbox D3D ring-buffer writes/copies |
+| **ZCULL RST** | `ON` / `OFF` | Hardware ZCull optimization *(restart required)* |
+| **DEPTH CMP RST** | `ON` / `OFF` | Hardware depth compression *(restart required; keep `OFF` if shadow grid dashes appear)* |
+| **LEVEL JUMP** | `OFF`, `01 CITY 1` .. `24 FINAL` | Replaces the next loaded campaign map with the selected level (via New Game / Continue / Restart) |
+| **SAVE CONFIG** | `APPLY` | Saves current settings to `sdmc:/switch/timeshift/timeshift.toml` |
 
 ---
 
