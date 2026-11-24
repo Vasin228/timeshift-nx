@@ -6,6 +6,7 @@
 #include <string>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <csignal>
 #include <exception>
 #include <filesystem>
@@ -94,6 +95,60 @@ void InstallCrashHandlers() {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
 }
+#if defined(__SWITCH__)
+}  // namespace
+
+__asm__(
+    ".section .rodata.timeshift_custom_intro,\"a\"\n"
+    ".global g_customSierraIntroStart\n"
+    ".global g_customSierraIntroEnd\n"
+    ".balign 16\n"
+    "g_customSierraIntroStart:\n"
+    ".incbin \"sierra_logo.bik\"\n"
+    "g_customSierraIntroEnd:\n"
+    ".previous\n");
+extern "C" {
+extern const uint8_t g_customSierraIntroStart[];
+extern const uint8_t g_customSierraIntroEnd[];
+}
+
+namespace {
+void InstallCustomIntroVideo() {
+  namespace fs = std::filesystem;
+  const char* dir = "sdmc:/switch/timeshift/game/video";
+  std::error_code ec;
+  if (!fs::exists(dir, ec)) {
+    return;
+  }
+  const size_t total = static_cast<size_t>(g_customSierraIntroEnd - g_customSierraIntroStart);
+  const char* dst = "sdmc:/switch/timeshift/game/video/sierra_logo.bik";
+  bool need_write = true;
+  if (fs::exists(dst, ec) && fs::file_size(dst, ec) == total && total >= 16) {
+    if (FILE* f = std::fopen(dst, "rb")) {
+      uint8_t hdr[16] = {};
+      if (std::fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr) &&
+          std::memcmp(hdr, g_customSierraIntroStart, sizeof(hdr)) == 0) {
+        need_write = false;
+      }
+      std::fclose(f);
+    }
+  }
+  if (!need_write) {
+    return;
+  }
+  const char* tmp = "sdmc:/switch/timeshift/game/video/sierra_logo.bik.tmp";
+  if (FILE* out = std::fopen(tmp, "wb")) {
+    const size_t written = std::fwrite(g_customSierraIntroStart, 1, total, out);
+    std::fclose(out);
+    if (written == total) {
+      fs::rename(tmp, dst, ec);
+    } else {
+      fs::remove(tmp, ec);
+    }
+  }
+}
+#endif
+
 }  // namespace
 
 namespace timeshift::app {
@@ -104,6 +159,9 @@ class TimeshiftRenutApp : public rex::ReXApp {
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
     InstallCrashHandlers();
+#if defined(__SWITCH__)
+    InstallCustomIntroVideo();
+#endif
     std::fprintf(stderr, "[app] TimeshiftRenutApp::Create - crash boundaries & signal handlers active\n");
     std::fflush(stderr);
     return std::unique_ptr<TimeshiftRenutApp>(new TimeshiftRenutApp(ctx, "timeshift", PPCImageConfig));

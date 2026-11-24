@@ -84,6 +84,7 @@ def compile_app_units():
         f'-I{ROOT}/private/app',
         f'-I{ROOT}/private/app/src',
         f'-I{ROOT}/private/app/generated/default',
+        f'-Wa,-I,{ROOT}/assets',
         '-isystem', f'{DEVKITPRO}/libnx/include',
     ]
 
