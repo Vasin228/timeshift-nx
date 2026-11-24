@@ -1,16 +1,35 @@
+<div align="center">
+
 [English](README.md) | [Русский](README_RU.md)
 
-![TimeShift for Nintendo Switch](assets/banner.jpg)
+<br />
 
-# timeshift-nx
+<img src="assets/banner.jpg" alt="TimeShift for Nintendo Switch" width="100%" />
 
-**TimeShift** (Xbox 360 version) native port for **Nintendo Switch** using static recompilation and the native `deko3d` graphics API.
+# TimeShift NX
 
-Releasing the project as-is.
+**Native Xbox 360 Static Recompilation Port of TimeShift for Nintendo Switch (`deko3d`)**
 
-I am not a professional programmer - I built this port with the help of AI tools. The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. Gameplay runs at ~25-35+ FPS at 720p on retail hardware after CPU/GPU optimization passes, while **audio quality is currently poor/broken and has not been fixed yet**.
+<p align="center">
+  <img src="https://img.shields.io/badge/Nintendo%20Switch-Horizon%20OS-E60012?style=for-the-badge&logo=nintendo-switch&logoColor=white" height="28" alt="Nintendo Switch" />
+  <img src="https://img.shields.io/badge/Renderer-deko3d%20(Tegra%20X1)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" height="28" alt="deko3d" />
+  <img src="https://img.shields.io/badge/Arch-AArch64%20%7C%20C%2B%2B23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" height="28" alt="AArch64 C++23" />
+  <img src="https://img.shields.io/badge/License-BSD--3--Clause-4A5568?style=for-the-badge" height="28" alt="BSD-3-Clause" />
+</p>
 
-If you have experience with low-level Switch development (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) or Switch audio and would like to help improve audio or optimize performance further, you are welcome to contribute! Send your improvements via Pull Requests: working PRs will be gladly reviewed and merged so the port continues to evolve.
+<p align="center">
+  <a href="https://boosty.to/vasin228">
+    <img src="https://img.shields.io/badge/Support%20the%20Project-Boosty%20Donate-F15F2C?style=for-the-badge&logo=boosty&logoColor=white" height="32" alt="Support on Boosty" />
+  </a>
+</p>
+
+</div>
+
+---
+
+The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively via `deko3d` without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. Gameplay runs at ~25-35+ FPS at 720p on retail hardware after CPU/GPU optimization passes, while **audio quality is currently poor/broken and has not been fixed yet**.
+
+Contributions and Pull Requests are always welcome.
 
 ---
 

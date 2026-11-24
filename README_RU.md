@@ -1,16 +1,35 @@
+<div align="center">
+
 [English](README.md) | [Русский](README_RU.md)
 
-![TimeShift for Nintendo Switch](assets/banner.jpg)
+<br />
 
-# timeshift-nx
+<img src="assets/banner.jpg" alt="TimeShift for Nintendo Switch" width="100%" />
 
-Порт игры **TimeShift** (версия Xbox 360) на **Nintendo Switch** на базе статической рекомпиляции и нативного графического API `deko3d`.
+# TimeShift NX
 
-Выкладываю проект как есть.
+**Нативный порт TimeShift (версия Xbox 360) для Nintendo Switch на базе статической рекомпиляции и `deko3d`**
 
-Сам я не профессиональный программист - весь этот порт я создавал с помощью нейросетей. Проект удалось довести до рабочего состояния на реальной консоли Nintendo Switch: игра собирается в один файл `.nro`, запускается нативно без эмуляторов, видеоролики играют, меню работает, сохранения и чекпоинты функционируют, уровни кампании загружаются, управление, физика и механики управления временем полностью работают. После оптимизации производительность на реальной консоли выросла до ~25-35+ FPS в 720p, но **звук в игре сейчас ужасный (искажения/треск/заикания) — до него мы пока не доходили**.
+<p align="center">
+  <img src="https://img.shields.io/badge/Nintendo%20Switch-Horizon%20OS-E60012?style=for-the-badge&logo=nintendo-switch&logoColor=white" height="28" alt="Nintendo Switch" />
+  <img src="https://img.shields.io/badge/Renderer-deko3d%20(Tegra%20X1)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" height="28" alt="deko3d" />
+  <img src="https://img.shields.io/badge/Arch-AArch64%20%7C%20C%2B%2B23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" height="28" alt="AArch64 C++23" />
+  <img src="https://img.shields.io/badge/License-BSD--3--Clause-4A5568?style=for-the-badge" height="28" alt="BSD-3-Clause" />
+</p>
 
-Если вы разбираетесь в низкоуровневой графике (deko3d, Nvidia Maxwell GM20B, Direct3D 9 / Xbox 360 Xenos) или звуке Switch и хотите помочь доработать звук или оптимизацию - берите исходники и подключайтесь! Свои исправления и улучшения присылайте через Pull Request на GitHub: готовые доработки с радостью приму и объединю, чтобы игра развивалась.
+<p align="center">
+  <a href="https://boosty.to/vasin228">
+    <img src="https://img.shields.io/badge/Поддержать%20проект-Boosty%20Донат-F15F2C?style=for-the-badge&logo=boosty&logoColor=white" height="32" alt="Поддержать на Boosty" />
+  </a>
+</p>
+
+</div>
+
+---
+
+Проект доведён до рабочего состояния на реальной консоли Nintendo Switch: игра собирается в один файл `.nro`, запускается нативно через `deko3d` без эмуляторов, видеоролики играют, меню работает, сохранения и чекпоинты функционируют, уровни кампании загружаются, управление, физика и механики управления временем полностью работают. После оптимизации производительность на реальной консоли выросла до ~25-35+ FPS в 720p, а **звук в игре сейчас ужасный (искажения/треск/заикания) — до него мы пока не доходили**.
+
+Pull Request'ы и предложения приветствуются.
 
 ---
 
