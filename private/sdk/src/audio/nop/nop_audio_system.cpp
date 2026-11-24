@@ -80,7 +80,7 @@ class SwitchAudoutDriver : public AudioDriver {
   static constexpr uint32_t kStereoValues = kChannelSamples * 2;
   static constexpr uint32_t kGuestFrameBytes = kStereoValues * sizeof(int16_t);  // 1024
   static constexpr uint32_t kBufferAllocBytes = 4096;  // 0x1000 DMA alignment
-  static constexpr uint32_t kBufferBytes = 1024;       // 1 guest frame (5.33 ms)
+  static constexpr uint32_t kBufferBytes = 2048;       // 2 guest frames (10.67 ms)
   static constexpr uint32_t kBufferCount = 32;
   static constexpr uint64_t kWaitTimeoutNs = 50000000ULL;  // 50 ms
 
@@ -156,6 +156,7 @@ class SwitchAudoutDriver : public AudioDriver {
     playback_running_ = true;
     playback_thread_ = std::thread([this]() {
 #if defined(__SWITCH__)
+      svcSetThreadCoreMask(CUR_THREAD_HANDLE, 1, (1u << 1) | (1u << 2));
       svcSetThreadPriority(CUR_THREAD_HANDLE, 0x20);
 #endif
       PlaybackThreadMain();

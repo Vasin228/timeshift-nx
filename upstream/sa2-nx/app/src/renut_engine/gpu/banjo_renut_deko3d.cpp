@@ -423,6 +423,10 @@ bool BoolSpecMask(uint64_t hash, uint32_t mask[8]) {
   return true;
 }
 
+bool HasGameShader(uint64_t hash) {
+  return Find(Open(), hash).entry != nullptr;
+}
+
 void SaveShaderCache() {
   std::lock_guard<std::mutex> lock(g_cache.mutex);
   if (g_cache.file) {

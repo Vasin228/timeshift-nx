@@ -163,8 +163,8 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
 
 void XmaDecoder::WorkerThreadMain() {
 #if defined(__SWITCH__)
-  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 0, (1u << 0) | (1u << 3)); // Keep off Core 1 (Audio) & Core 2 (Render)
-  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x28);                     // Lower priority than AudioWorker
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, (1u << 2) | (1u << 1)); // Prefer Core 2 (Render has headroom), allow Core 1; stay off Core 0 (Main)
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x26);                     // Below Main/Render (0x24) to protect FPS, above 0x28 Saber3D workers
 #endif
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
@@ -321,15 +321,14 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
         context.Enable();
       }
     }
-    // Bound inline decoding to at most 1 context (<= 2.5ms) to preserve the
-    // 5.33ms AudioWorker synthesis deadline. Delegate remaining contexts
-    // to the background worker running on Core 0/3.
+    // Decode up to 8 kicked contexts inline (~0.18 ms each) so 8-block XMA ring buffers
+    // are refilled immediately without waiting for WorkerThreadMain behind RenderThread.
     int decoded_inline = 0;
     for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
       if (kicked_value & 1) {
         uint32_t context_id = base_context_id + i;
         auto& context = contexts_[context_id];
-        if (++decoded_inline <= 1) {
+        if (++decoded_inline <= 8) {
           if (context.Work()) {
             context.SignalWorkDone();
           }

@@ -1,7 +1,7 @@
 # TimeShift ReXGlue Switch Configuration
 log_level = "info"
 switch_nintendo_layout = true
-audio_maxqframes = 16
+audio_maxqframes = 32
 vulkan_async_skip_incomplete_frames = false
 async_shader_compilation = true
 renut_vsync = false

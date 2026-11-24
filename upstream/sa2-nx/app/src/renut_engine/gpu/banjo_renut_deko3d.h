@@ -28,6 +28,9 @@ std::unique_ptr<plume::RenderShader> CreateGameShader(plume::RenderDevice *devic
 // The boolean specialization constants (ids 1000..1255) a game shader has, as ShaderBoolSpecMask gives them.
 bool BoolSpecMask(uint64_t hash, uint32_t mask[8]);
 
+// Whether a game shader hash exists in the loaded GLSL packages (NRO or external deko3d_glsl.bin).
+bool HasGameShader(uint64_t hash);
+
 // peggle2-nx (2026-10-20): how many game shaders of the shader table have no GLSL in any package (the NRO's, or
 // deko3d_glsl.bin beside it): a build without translated game shaders before the installer's file is there.
 size_t MissingGameShaders();

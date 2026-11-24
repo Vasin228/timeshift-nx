@@ -49,6 +49,15 @@ game/
 user/
 cache/
 shader_capture*/
+private/dump360/
+*.xex
+*.s3dpak
+*.sdrc
+ps_*.bin
+vs_*.bin
+user.ini
+*.remote
+perf_baseline*.csv
 
 # Local launch scripts
 run_ryujinx.bat

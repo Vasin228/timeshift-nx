@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -85,7 +86,23 @@ const ShaderCacheEntry *FindShaderEntry(uint64_t hash) {
   const ShaderCacheEntry *end = begin + g_shaderCacheEntryCount;
   const ShaderCacheEntry *it = std::lower_bound(
       begin, end, hash, [](const ShaderCacheEntry &e, uint64_t h) { return e.hash < h; });
-  return (it != end && it->hash == hash) ? it : nullptr;
+  if (it != end && it->hash == hash)
+    return it;
+#if defined(PLUME_DEKO3D)
+  if (IsDeko3D() && banjo::renut_gpu::deko3d::HasGameShader(hash)) {
+    static std::mutex s_dyn_mutex;
+    static std::unordered_map<uint64_t, ShaderCacheEntry> s_dyn_entries;
+    std::lock_guard<std::mutex> lock(s_dyn_mutex);
+    auto [ins, created] = s_dyn_entries.try_emplace(hash, ShaderCacheEntry{});
+    if (created) {
+      ins->second.hash = hash;
+      ins->second.textureFetchMask = ~0u;
+      std::fill(std::begin(ins->second.floatConstants), std::end(ins->second.floatConstants), ~0u);
+    }
+    return &ins->second;
+  }
+#endif
+  return nullptr;
 }
 
 void ShaderBoolSpecMask(const ShaderCacheEntry &entry, uint32_t mask[8]) {

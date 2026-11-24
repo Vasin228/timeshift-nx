@@ -110,6 +110,9 @@ void AudioSystem::WorkerThreadMain() {
 
   // Main run loop.
   uint32_t diag_pump_count = 0;
+#if defined(__SWITCH__)
+  auto next_dispatch_time = std::chrono::steady_clock::now();
+#endif
   while (worker_running_) {
     // These handles signify the number of submitted samples. Once we reach
     // 64 samples, we wait until our audio backend releases a semaphore
@@ -154,6 +157,25 @@ void AudioSystem::WorkerThreadMain() {
         }
         SCOPE_profile_cpu_i("apu", "rex::audio::AudioSystem->client_callback");
         uint64_t args[] = {client_callback_arg};
+#if defined(__SWITCH__)
+        {
+          constexpr auto kMinFrameInterval = std::chrono::microseconds(4600);
+          auto now = std::chrono::steady_clock::now();
+          if (next_dispatch_time > now) {
+            auto sleep_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                next_dispatch_time - now)
+                                .count();
+            if (sleep_ns > 0) {
+              svcSleepThread(static_cast<s64>(sleep_ns));
+            }
+            now = std::chrono::steady_clock::now();
+          }
+          if (next_dispatch_time + kMinFrameInterval < now) {
+            next_dispatch_time = now;
+          }
+          next_dispatch_time += kMinFrameInterval;
+        }
+#endif
         function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
                                       rex::countof(args));
         if (diag_pump_count < 10) {

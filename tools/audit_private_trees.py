@@ -16,10 +16,10 @@ managed.update({
 sdk_managed = {
     'src/kernel/xboxkrnl/xboxkrnl_io.cpp': '25038f822e7f99ac46e7620fe3b0854b2317df5d010dcfae69f75b9c11b388ca',
     'src/audio/CMakeLists.txt': '212583c6d54ccc186fd45e4fddd3bebaa1a74651c9946b103ee59c75b801e076',
-    'src/audio/audio_system.cpp': '366b12852d9bd188b8c0f09e5283b59a0ed24cce64450c6f5db2f523c4905e10',
-    'src/audio/nop/nop_audio_system.cpp': 'c1c25549abe986c01c7237efefa6a0ecd9293234698be7dd28cdcc1df41f5674',
+    'src/audio/audio_system.cpp': '359c21be680acffd3511c24171c01400953e86aca5ed1619f9a8f492a1a63c22',
+    'src/audio/nop/nop_audio_system.cpp': '10bec544b5ad1628ee6d688c37c95c5bdb47f18f417380904a16c673222f516f',
     'src/audio/xma_context.cpp': 'a442cc2f5ceeedd5c7bea42ff9b9356b69ac0236e75201899f1b6f16e01b77aa',
-    'src/audio/xma_decoder.cpp': '8cdce2eab101c3c6a7ddf2eea448b3a4529cf8520f49c738f87d15572051b23b',
+    'src/audio/xma_decoder.cpp': 'd53ec2bd534ec03494be88b0b17e5391aec38645ee8cd3939e1d9cdabe9c11a7',
     'src/audio/xma_decoder_switch.cpp': 'a5c95bdef00681ccbdd5bd273015446dd95c71ec664424ed525b80ee2bc15e85',
     'src/graphics/switch_native/native_textures.cpp': '8b6820aeecdd769851d930ca467986ffbed36795352403d97ed52782a810baac',
     'include/rex/audio/xma/context.h': '3cbe892635b066fafcaaceae7e9e7d10675f1a2416d3f97a2fd74dbaca7a7fed',

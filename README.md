@@ -27,7 +27,7 @@
 
 ---
 
-The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively via `deko3d` without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, and time manipulation mechanics. Gameplay runs at ~25-35+ FPS at 720p on retail hardware after CPU/GPU optimization passes, while **audio quality is currently poor/broken and has not been fixed yet**.
+The project has reached a working, playable state on physical Nintendo Switch hardware: it compiles into a standalone `.nro` file, runs natively via `deko3d` without emulators, plays cutscenes, operates menus, saves progress and checkpoints, loads campaign levels, and supports controls, physics, time manipulation mechanics, clean XMA2/FMOD audio, and complete campaign shaders (`15,961` translated / `16,827` `uam` variants). Gameplay runs at ~25-35+ FPS at 720p on retail hardware after CPU/GPU optimization passes.
 
 Contributions and Pull Requests are always welcome.
 
@@ -35,13 +35,13 @@ Contributions and Pull Requests are always welcome.
 
 ## Project Completion Status
 
-Overall Port Readiness: **`[████████░░] 85%`**
+Overall Port Readiness: **`[█████████░] 95%`**
 
 | Subsystem | Progress | Status |
 |---|---|---|
 | **Core, Memory, Saves & Controls** | `█████████░` **95%** | Static recompilation, 2.4–3.0 GB heap, `o1heap`, saves/checkpoints, Joy-Con/Pro, time powers |
-| **Graphics & Shaders (`deko3d`)** | `██████████` **98%** | `5,403` GLSL / `6,287` `uam`-compiled shaders across campaign levels, sharp mipmaps/POM, soft particles, `Hold +` overlay menu |
-| **Audio (`XMA2` / `audout`)** | `███░░░░░░░` **30%** | *Currently sounds terrible (crackling/distortion/stuttering) — not yet worked on* |
+| **Graphics & Shaders (`deko3d`)** | `██████████` **100%** | `15,961` GLSL / `16,827` `uam`-compiled shaders across all 26 `.s3dpak` + 4 `.sdrc` archives, sharp mipmaps/POM, soft particles, `Hold +` overlay menu |
+| **Audio (`XMA2` / `audout`)** | `█████████░` **95%** | Real-time XMA2 + FMOD Ex + `audout` audio fixed via 4.6 ms inter-frame pacer, 2048 B buffers, 8-context inline decode, and Core 1/2 pinning |
 | **Performance (Switch Hardware)** | `████████░░` **80%** | Playable `~25-35+ FPS` (`1280x720`) via `-O3`, 4-core pinning, ZCull, lock-free registry & D3D ring bypass |
 
 ---
@@ -50,7 +50,8 @@ Overall Port Readiness: **`[████████░░] 85%`**
 
 - **Static Recompilation:** Original Xbox 360 guest code compiled directly to 64-bit ARM (AArch64) for Horizon OS.
 - **Native Renderer:** Runs via Nintendo Switch native `deko3d` API (direct hardware access to Tegra X1 GPU).
-- **Complete Campaign Shader Cache & Sharp Textures:** `5,403` translated GLSL shaders and `6,287` patched-`uam` `DKSH` binaries (`deko3d_shaders_f0.bin`, `0` missing in tested areas) + Xenos `GetTextureGradients` support restoring high-resolution mipmaps and Parallax Occlusion Mapping with zero glowing or flickering objects.
+- **Clean Real-Time Audio (`XMA2` / `FMOD` / `audout`):** 4.6 ms `AudioWorker` inter-frame pacer, 2048 B `audout` buffers (`2` guest frames), `8`-context inline XMA decoding, and Core 1/2 thread pinning eliminate FMOD ring-buffer lapping and distortion in dialogue, music, and combat SFX.
+- **Complete All-Archive Shader Cache & Sharp Textures:** `15,961` translated GLSL shaders and `16,827` patched-`uam` `DKSH` binaries across all 26 `.s3dpak` archives + 4 `.sdrc` caches (`shader_cache_switch.cpp` metadata + `deko3d_glsl.bin` + `deko3d_shaders_f0.bin`), Xenos `GetTextureGradients` support, and non-zero fallback metadata in `shader_library.cpp` prevent missing/black meshes and glowing objects.
 - **Fire, Smoke & Explosions (Soft Particles):** Conditional EDRAM 4xMSAA aliasing (`640x360` soft-particle buffers onto `1280x720` targets) restores campfires, volumetric smoke, grenades, and explosion effects with intact 1:1 camera framing.
 - **In-Game Graphics & Level Menu (`Hold +`):** Real-time FPS/GPU HUD, toggles for shadows, draw distance, VSync, anisotropic filtering, D3D ring bypass, ZCull, depth compression, and a 24-level campaign `LEVEL JUMP` selector.
 - **Save System & Checkpoints:** Fully implemented and working! Profile saves, new game autosaves, and in-game checkpoints are created and loaded properly on Horizon OS SD card storage (`sdmc:/switch/timeshift/user/`).
@@ -68,16 +69,12 @@ Overall Port Readiness: **`[████████░░] 85%`**
 
 ## Known Issues (What Needs Fixing)
 
-If anyone decides to pick this up, here are the main remaining areas that need attention:
+If anyone decides to pick this up, here is the main remaining area for further improvement:
 
-### 1. Poor Audio Quality (Not Yet Fixed)
-* **Symptom:** In-game audio currently sounds terrible (heavy distortion, crackling, and stuttering), especially during gameplay and multi-channel combat. We have not worked on fixing audio yet.
-* **Technical details:** XMA2 decoder (`private/sdk/src/audio/xma_decoder.cpp`) and `AudioWorker` / `audout` buffering (`private/sdk/src/audio/audio_system.cpp`). Needs proper XMA2 stream/frame decoding and asynchronous offloaded mixing.
-
-### 2. Further Performance Headroom in Heavy Scenes
+### 1. Further Performance Headroom in Heavy Scenes
 * **Symptom:** Heavy outdoor combat scenes with 600–700+ draw calls can still dip below 30 FPS when full shadows are enabled (toggleable via `Hold +` menu).
 
-*(Previously listed texture LOD, glowing/flickering objects, black silhouettes, shadow dashes, and `10-15 FPS` bottlenecks were addressed in Parts 270–290 via `GetTextureGradients`, conditional EDRAM 4xMSAA aliasing, `5,403`-shader patched-`uam` rebuild, depth-compression control, `-O3`, 4-core pinning, ZCull, lock-free `DeviceRegistry`, and `renut_skip_orig_d3d`.)*
+*(Previously listed audio distortion/stuttering, remaining black level geometry/rooftop shaders, texture LOD, glowing/flickering objects, shadow dashes, and `10-15 FPS` bottlenecks were addressed in Parts 270–291 via `4.6 ms` `AudioWorker` pacing + XMA/FMOD Core 1/2 pinning, full `15,961`-shader `.s3dpak`/`.sdrc` extraction + `ShaderCacheEntry` metadata bake, `GetTextureGradients`, conditional EDRAM 4xMSAA aliasing, depth-compression control, `-O3`, 4-core pinning, ZCull, lock-free `DeviceRegistry`, and `renut_skip_orig_d3d`.)*
 
 ---
 
@@ -97,10 +94,11 @@ timeshift-nx/
 |   `-- sdk/                       # rexglue (audio, kernel, memory)
 |-- tools/                # Build and deployment scripts
 |   |-- build_switch_app.py        # Links timeshift.nro
+|   |-- extract_all_pak_shaders.py # Extracts shaders across all .s3dpak and .sdrc archives
 |   |-- prepare_switch_cache.py    # Prepares shaders and assets
 |   `-- deploy_candidate.py        # Deploys to Switch via FTP
-|-- MODLOG.md             # Development chronicle (Parts 270-290; earlier in archives)
-|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache (6,287 records)
+|-- MODLOG.md             # Development chronicle (Parts 286-291; earlier in archives)
+|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache
 `-- timeshift.toml        # Game configuration file for Switch
 ```
 
@@ -143,6 +141,7 @@ timeshift-nx/
 2. Copy the following files into that folder:
    - `timeshift.nro`
    - `timeshift.toml`
+   - `deko3d_glsl.bin` (if built externally from your game dump)
    - `deko3d_shaders_f0.bin`
    - `game/` folder with extracted TimeShift game data.
 3. **Launch ONLY via Title Override:**  

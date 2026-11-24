@@ -689,17 +689,49 @@ REX_EXTERN(sub_8214F008) {
 }
 
 REX_EXTERN(sub_828172A8) {
-  PinBackgroundThreadToCore3("828172A8");
+#if defined(__SWITCH__)
+  if (!g_thread_core_pinned) {
+    Result rc_prio = 0;
+    const Result rc_mask = PinCurrentThread(1, (1u << 1) | (1u << 2), 0x21, &rc_prio);
+    REXLOG_INFO("[audio-thread] 828172A8 pinned ideal=1 mask=0x6 prio=0x21 (mask_rc=0x{:X} prio_rc=0x{:X})",
+                rc_mask, rc_prio);
+  }
+#endif
   __imp__sub_828172A8(ctx, base);
 }
 
 REX_EXTERN(sub_8287F678) {
-  PinBackgroundThreadToCore3("8287F678");
+#if defined(__SWITCH__)
+  if (!g_thread_core_pinned) {
+    char name[32] = {};
+    const uint32_t obj_va = ctx.r3.u32;
+    if (obj_va >= 0x10000u && obj_va < 0xDFFF0000u) {
+      const char* src = reinterpret_cast<const char*>(base + obj_va + 4u);
+      for (size_t i = 0; i < sizeof(name) - 1; ++i) {
+        if (src[i] == '\0') break;
+        name[i] = src[i];
+      }
+    }
+    const bool is_fmod_mixer = (std::strncmp(name, "FMOD mixer", 10) == 0);
+    const int32_t prio = is_fmod_mixer ? 0x22 : 0x26;
+    Result rc_prio = 0;
+    const Result rc_mask = PinCurrentThread(2, (1u << 1) | (1u << 2), prio, &rc_prio);
+    REXLOG_INFO("[audio-thread] 8287F678 name='{}' pinned ideal=2 mask=0x6 prio=0x{:X} (mask_rc=0x{:X} prio_rc=0x{:X})",
+                name, uint32_t(prio), rc_mask, rc_prio);
+  }
+#endif
   __imp__sub_8287F678(ctx, base);
 }
 
 REX_EXTERN(sub_82B08E80) {
-  PinBackgroundThreadToCore3("82B08E80");
+#if defined(__SWITCH__)
+  if (!g_thread_core_pinned) {
+    Result rc_prio = 0;
+    const Result rc_mask = PinCurrentThread(2, (1u << 1) | (1u << 2), 0x25, &rc_prio);
+    REXLOG_INFO("[audio-thread] 82B08E80 pinned ideal=2 mask=0x6 prio=0x25 (mask_rc=0x{:X} prio_rc=0x{:X})",
+                rc_mask, rc_prio);
+  }
+#endif
   __imp__sub_82B08E80(ctx, base);
 }
 
