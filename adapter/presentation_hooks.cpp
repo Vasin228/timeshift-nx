@@ -18,12 +18,15 @@
 #include "renut_engine/gpu/guest/callbacks.h"
 
 #include <rex/ppc.h>
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <o1heap.h>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -32,32 +35,95 @@
 #include <switch.h>
 #endif
 
+#if defined(__SWITCH__)
+REXCVAR_DEFINE_BOOL(renut_audio_reverb, false, "Renut",
+                    "Enable FMOD software SFX reverb DSP (off by default on Switch to save 10-15ms CPU in combat)");
+#else
+REXCVAR_DEFINE_BOOL(renut_audio_reverb, true, "Renut",
+                    "Enable FMOD software SFX reverb DSP");
+#endif
+
 REX_EXTERN(__imp__sub_8264B1A8);
 REX_EXTERN(__imp__sub_8264AD00);
+REX_EXTERN(__imp__sub_8264DCF0);
 REX_EXTERN(__imp__sub_82145740);
 REX_EXTERN(__imp__sub_821455E8);
 REX_EXTERN(__imp__sub_828172A8);
+REX_EXTERN(__imp__sub_8281AE38);
 REX_EXTERN(__imp__sub_8287F678);
+REX_EXTERN(__imp__sub_828C05A8);
+REX_EXTERN(__imp__sub_828C6470);
+REX_EXTERN(__imp__sub_828C80D0);
+REX_EXTERN(__imp__sub_828D6248);
+REX_EXTERN(__imp__sub_828D6328);
+REX_EXTERN(__imp__sub_828D6418);
+REX_EXTERN(__imp__sub_828D65E0);
+REX_EXTERN(__imp__sub_828D7818);
+REX_EXTERN(__imp__sub_828DA770);
+REX_EXTERN(__imp__sub_828DC538);
+REX_EXTERN(__imp__sub_828DEE18);
+REX_EXTERN(__imp__sub_828DFCC0);
 REX_EXTERN(__imp__sub_82B08E80);
+
+#if defined(__SWITCH__)
+extern "C" {
+void rex_watchdog_note_swap(uint64_t swaps);
+void rex_watchdog_set_heap_owner(uint32_t role_plus_one);
+void rex_watchdog_set_heap_op(uint32_t op);
+void rex_watchdog_set_draw_stage(uint32_t stage);
+void rex_watchdog_set_render_stage(uint32_t stage);
+}
+#endif
 
 namespace {
 
 thread_local bool g_thread_core_pinned = false;
+thread_local uint64_t g_prev_thread_cpu_ticks = 0;
+
+inline uint32_t CrtPhysOff(uint32_t ea) noexcept {
+#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
+  return (ea >= 0xE0000000u) ? 0x1000u : 0u;
+#else
+  (void)ea;
+  return 0u;
+#endif
+}
 
 inline uint32_t* GuestWordPtr(uint8_t* base, uint32_t ea) {
-  const uint32_t phys_off = (ea >= 0xE0000000u) ? 0x1000u : 0u;
-  return reinterpret_cast<uint32_t*>(base + ea + phys_off);
+  return reinterpret_cast<uint32_t*>(base + ea + CrtPhysOff(ea));
 }
 
 #if defined(__SWITCH__)
-Result PinCurrentThread(int32_t ideal_core, uint32_t core_mask, int32_t prio, Result* out_prio_rc = nullptr) {
-  Result rc_mask = svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal_core, core_mask);
-  if (R_FAILED(rc_mask)) {
-    const int32_t fallback_ideal = (ideal_core == 1) ? 1 : 0;
-    rc_mask = svcSetThreadCoreMask(CUR_THREAD_HANDLE, fallback_ideal, 0x3u);
+uint32_t QueryAllowedCoreMask() {
+  static const uint32_t allowed = [] {
+    u64 val = 0;
+    const Result rc = svcGetInfo(&val, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
+    const uint32_t mask = (R_SUCCEEDED(rc) && (val & 0xFu) != 0u) ? static_cast<uint32_t>(val & 0xFu) : 0x7u;
+    timeshift::telemetry::g_allowed_core_mask.store(mask, std::memory_order_relaxed);
+    return mask;
+  }();
+  return allowed;
+}
+
+Result PinCurrentThread(int32_t ideal_core, uint32_t core_mask, int32_t prio,
+                        Result* out_prio_rc = nullptr, int32_t* out_actual_core = nullptr,
+                        uint32_t* out_applied_mask = nullptr) {
+  const uint32_t allowed = QueryAllowedCoreMask();
+  uint32_t eff_mask = core_mask & allowed;
+  if (eff_mask == 0u) {
+    eff_mask = allowed;
   }
+  int32_t eff_ideal = ideal_core;
+  if (eff_ideal < 0 || eff_ideal >= 4 || (eff_mask & (1u << eff_ideal)) == 0u) {
+    if (eff_mask & 0x4u) eff_ideal = 2;
+    else if (eff_mask & 0x2u) eff_ideal = 1;
+    else eff_ideal = 0;
+  }
+  const Result rc_mask = svcSetThreadCoreMask(CUR_THREAD_HANDLE, eff_ideal, eff_mask);
   const Result rc_prio = svcSetThreadPriority(CUR_THREAD_HANDLE, prio);
   if (out_prio_rc) *out_prio_rc = rc_prio;
+  if (out_actual_core) *out_actual_core = svcGetCurrentProcessorNumber();
+  if (out_applied_mask) *out_applied_mask = eff_mask;
   g_thread_core_pinned = true;
   return rc_mask;
 }
@@ -92,12 +158,21 @@ struct Arena {
 #if defined(__SWITCH__)
 Mutex g_mutex = 0;
 struct HeapGuard {
-  HeapGuard() { mutexLock(&g_mutex); }
-  ~HeapGuard() { mutexUnlock(&g_mutex); }
+  HeapGuard() {
+    mutexLock(&g_mutex);
+    rex_watchdog_set_heap_owner(static_cast<uint32_t>(timeshift::telemetry::t_thread_role + 1));
+  }
+  ~HeapGuard() {
+    rex_watchdog_set_heap_op(0u);
+    rex_watchdog_set_heap_owner(0u);
+    mutexUnlock(&g_mutex);
+  }
 };
+inline void SetHeapOp(uint32_t op) { rex_watchdog_set_heap_op(op); }
 #else
 std::mutex g_mutex;
 using HeapGuard = std::lock_guard<std::mutex>;
+inline void SetHeapOp(uint32_t) {}
 #endif
 
 Arena g_arenas[kMaxArenas]{};
@@ -114,6 +189,7 @@ inline rex::memory::BaseHeap* GetVirtualHeap64K() {
 }
 
 uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
+  SetHeapOp(1u);
   ++g_alloc_cnt;
   if (req_size > kMaxValidReq) return 0u;
   const uint32_t req = (req_size == 0u) ? 16u : req_size;
@@ -123,9 +199,12 @@ uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
   if (req >= kHugeThreshold) {
     const uint32_t total = (req + 16u + 65535u) & ~65535u;
     uint32_t va = 0u;
-    if (!vheap->Alloc(total, 65536u,
-                      rex::memory::kMemoryAllocationReserve | rex::memory::kMemoryAllocationCommit,
-                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite, false, &va)) {
+    SetHeapOp(4u);
+    const bool ok = vheap->Alloc(total, 65536u,
+                                 rex::memory::kMemoryAllocationReserve | rex::memory::kMemoryAllocationCommit,
+                                 rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite, false, &va);
+    SetHeapOp(1u);
+    if (!ok) {
       return 0u;
     }
     auto* hdr = reinterpret_cast<AllocHdr*>(base + va);
@@ -157,14 +236,19 @@ uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
     Arena& a = g_arenas[idx];
     if (a.inst) continue;
     uint32_t va = 0u;
-    if (!vheap->Alloc(kArenaSize, 65536u,
-                      rex::memory::kMemoryAllocationReserve | rex::memory::kMemoryAllocationCommit,
-                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite, false, &va)) {
+    SetHeapOp(4u);
+    const bool ok = vheap->Alloc(kArenaSize, 65536u,
+                                 rex::memory::kMemoryAllocationReserve | rex::memory::kMemoryAllocationCommit,
+                                 rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite, false, &va);
+    SetHeapOp(1u);
+    if (!ok) {
       return 0u;
     }
     O1HeapInstance* inst = o1heapInit(base + va, kArenaSize);
     if (!inst) {
+      SetHeapOp(4u);
       vheap->Release(va);
+      SetHeapOp(1u);
       return 0u;
     }
     a.va_start = va;
@@ -188,6 +272,7 @@ uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
 }
 
 void FreeLocked(uint8_t* base, uint32_t ptr_va) {
+  SetHeapOp(2u);
   ++g_free_cnt;
   if (ptr_va < 0x40000000u || ptr_va >= 0x7F000000u) return;
   auto* hdr = reinterpret_cast<AllocHdr*>(base + ptr_va - 16u);
@@ -203,7 +288,11 @@ void FreeLocked(uint8_t* base, uint32_t ptr_va) {
   hdr->magic = kFreedMagic;
   auto* vheap = GetVirtualHeap64K();
   if (idx == kDedicatedIdx) {
-    if (vheap) vheap->Release(base_va);
+    if (vheap) {
+      SetHeapOp(4u);
+      vheap->Release(base_va);
+      SetHeapOp(2u);
+    }
     if (g_huge_live > 0u) --g_huge_live;
     return;
   }
@@ -211,14 +300,25 @@ void FreeLocked(uint8_t* base, uint32_t ptr_va) {
     o1heapFree(g_arenas[idx].inst, hdr);
     if (g_arenas[idx].live_allocs > 0u) --g_arenas[idx].live_allocs;
     if (idx >= 2u && g_arenas[idx].live_allocs == 0u) {
-      if (vheap) vheap->Release(g_arenas[idx].va_start);
-      g_arenas[idx] = Arena{};
-      if (g_last_arena == idx) g_last_arena = 0u;
+      uint32_t empty_spare = 0u;
+      for (uint32_t j = 2u; j < kMaxArenas; ++j) {
+        if (g_arenas[j].inst && g_arenas[j].live_allocs == 0u) ++empty_spare;
+      }
+      if (empty_spare > 2u) {
+        if (vheap) {
+          SetHeapOp(4u);
+          vheap->Release(g_arenas[idx].va_start);
+          SetHeapOp(2u);
+        }
+        g_arenas[idx] = Arena{};
+        if (g_last_arena == idx) g_last_arena = 0u;
+      }
     }
   }
 }
 
 uint32_t ReallocLocked(uint8_t* base, uint32_t old_va, uint32_t new_size) {
+  SetHeapOp(3u);
   ++g_realloc_cnt;
   if (old_va == 0u) return MallocLocked(base, new_size);
   if (new_size > kMaxValidReq) return 0u;
@@ -247,6 +347,7 @@ uint32_t ReallocLocked(uint8_t* base, uint32_t old_va, uint32_t new_size) {
     std::memcpy(base + new_va, base + old_va, std::min(old_size, req));
     FreeLocked(base, old_va);
   }
+  SetHeapOp(3u);
   return new_va;
 }
 
@@ -277,22 +378,6 @@ void LogWindowSummary() {
 }
 
 }  // namespace o1_guest_heap
-
-inline void PinBackgroundThreadToCore3(const char* tag) {
-#if defined(__SWITCH__)
-  if (!g_thread_core_pinned) {
-    Result rc_prio = 0;
-    const Result rc_mask = PinCurrentThread(3, 0x8u, 0x28, &rc_prio);
-    static std::atomic<uint32_t> s_bg_pin_logs{0};
-    if (s_bg_pin_logs.fetch_add(1, std::memory_order_relaxed) < 20u) {
-      REXLOG_INFO("[cpu-pin] bg {} pinned ideal=3 mask=0x8 rc=0x{:X} prio=0x28 rc=0x{:X}",
-                  tag, uint32_t(rc_mask), uint32_t(rc_prio));
-    }
-  }
-#else
-  (void)tag;
-#endif
-}
 
 }  // namespace
 
@@ -353,12 +438,20 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
 
     const uint64_t t_swap_start = timeshift::telemetry::NowTicks();
 #if defined(__SWITCH__)
+    struct WatchdogSwapStageGuard {
+      ~WatchdogSwapStageGuard() { rex_watchdog_set_draw_stage(0u); }
+    } wd_swap_guard;
+    rex_watchdog_set_draw_stage(1u);
+    timeshift::telemetry::t_thread_role = 1;
     if (!g_thread_core_pinned) {
       Result rc_prio = 0;
-      const Result rc_mask = PinCurrentThread(0, 0x3u, 0x24, &rc_prio);
-      REXLOG_INFO("[cpu-pin] swap thread pinned ideal=0 mask=0x3 rc=0x{:X} prio=0x24 rc=0x{:X}",
-                  uint32_t(rc_mask), uint32_t(rc_prio));
+      int32_t actual_core = -1;
+      uint32_t applied_mask = 0;
+      const Result rc_mask = PinCurrentThread(0, 0x3u, 0x24, &rc_prio, &actual_core, &applied_mask);
+      REXLOG_INFO("[cpu-pin] swap thread pinned ideal=0 mask=0x{:X} (allowed=0x{:X}) cur_core={} rc=0x{:X} prio=0x24 rc=0x{:X}",
+                  applied_mask, QueryAllowedCoreMask(), actual_core, uint32_t(rc_mask), uint32_t(rc_prio));
     }
+    timeshift::telemetry::AccountThreadCpuTicks(1);
     timeshift::telemetry::g_game_core_mask.fetch_or(1u << svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
 #endif
 
@@ -394,6 +487,9 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
     // Increment CPU swap counter at offset 16544
     const uint32_t swap_count_val = Word(dev_span, swap_count) + 1;
     Put(dev_span, swap_count, swap_count_val);
+#if defined(__SWITCH__)
+    rex_watchdog_note_swap(swap_count_val);
+#endif
 
     // 3. Process display gamma ramp at offset 14988 (768 big-endian 16-bit words = 1536 bytes)
     const uint8_t* gamma_ptr = dev_span.data() + gamma_ramp;
@@ -411,6 +507,9 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
     // 4. Real GPU frame backpressure:
     // If too many frames are queued ahead of presentation, wait on fence progress.
     if (swap_count_val > Word(dev_span, kPresentRetiredCount) + kMaxFramesInFlight) {
+#if defined(__SWITCH__)
+      rex_watchdog_set_draw_stage(2u);
+#endif
       timeshift::telemetry::FenceWaitScope wait_scope;
       while (swap_count_val > Word(dev_span, kPresentRetiredCount) + kMaxFramesInFlight) {
         if (!renut::gpu::render_thread::WaitForFenceProgress(std::chrono::milliseconds(2))) {
@@ -423,6 +522,9 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
     // 5. Queue presentation to render thread.
     // Frontbuffer Resolve was already queued by sub_8264C8E8 before Swap.
     // The render thread executes FIFO, so Resolve always completes before Present.
+#if defined(__SWITCH__)
+    rex_watchdog_set_draw_stage(3u);
+#endif
     const uint64_t swap_ordinal = swap_count_val;
     renut::gpu::render_thread::QueueFrame([device_va, front_buffer_va, swap_ordinal] {
       using namespace renut::gpu;
@@ -440,13 +542,22 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
         LatchResolutionScaleLocked();
       }
 
+#if defined(__SWITCH__)
+      rex_watchdog_set_render_stage(2u);
+#endif
       Video::NotePresentingSwap(swap_ordinal);
       Video::Present(image.texture ? &image : nullptr);
 
+#if defined(__SWITCH__)
+      rex_watchdog_set_render_stage(5u);
+#endif
       {
         std::lock_guard lock(State().mutex);
         ::renut::gpu::SyncPipelineListLocked();
       }
+#if defined(__SWITCH__)
+      rex_watchdog_set_render_stage(6u);
+#endif
       ::renut::gpu::MaybeReportMemory();
 
       // Advance presentation retirement counter (offset 16552) in guest device
@@ -454,6 +565,9 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
         auto& retired = *reinterpret_cast<be_u32*>(dev + kPresentRetiredCount);
         retired = uint32_t(swap_ordinal);
       }
+#if defined(__SWITCH__)
+      rex_watchdog_set_render_stage(1u);
+#endif
     });
 
     // 6. Run ready guest callbacks after queueing frame
@@ -545,39 +659,46 @@ REX_EXTERN(sub_82145740) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   __imp__sub_82145740(ctx, base);
 #if defined(__SWITCH__)
-  int32_t ideal_core = 3;
-  uint32_t core_mask = 0x8u;
-  int32_t prio = 0x28;
+  int32_t ideal_core = 2;
+  uint32_t core_mask = 0x4u;
+  int32_t prio = 0x2C;
+  int role = 5;
   if (caller_lr == 0x8224A53Cu) {
-    // Main game simulation, physics, and AI thread (TID 04): dual-core spillover with TID 09.
+    // Main game simulation, physics, and AI thread (TID 04): dedicated Core 1 primary, spillover Core 0.
+    role = 0;
     ideal_core = 1;
     core_mask = 0x3u;
     prio = 0x24;
   } else if (caller_lr == 0x82264AC8u && guest_hw == 3u) {
-    // Dedicated Saber3D 3D scene & draw submission thread (TID 09): Core 0 primary (away from AudioWorker on Core 1), spillover to Core 1.
+    // Dedicated Saber3D 3D scene & draw submission thread (TID 09): Core 0 primary, spillover Core 1.
+    role = 1;
     ideal_core = 0;
     core_mask = 0x3u;
     prio = 0x24;
   } else if (caller_lr == 0x82264AC8u) {
-    // With lock-free o1heap (libnx Mutex with priority inheritance), allow parallel Saber3D
-    // workers onto Cores 0, 1, 3 (mask 0xB, prio 0x28 < TID 04/09 prio 0x24) so they use idle
-    // Cycles when TID 04 waits on semaphores without ever preempting TID 04/09.
-    ideal_core = 3;
-    core_mask = 0xBu;
-    prio = 0x28;
+    // Parallel Saber3D workers: prefer Core 1 headroom, allow 0..2, below main/draw/render/audio.
+    role = 2;
+    ideal_core = 1;
+    core_mask = 0x7u;
+    prio = 0x27;
   } else {
-    // Streaming and background asset decompression threads (0x8220040C, etc.): equal prio 0x28 on Core 3.
-    ideal_core = 3;
-    core_mask = 0x8u;
+    // Streaming and background decompression threads: allow Core 1+2 so heap/CS locks never starve on Core 2.
+    role = 5;
+    ideal_core = 1;
+    core_mask = 0x6u;
     prio = 0x28;
   }
+  timeshift::telemetry::t_thread_role = role;
   Result rc_prio = 0;
-  const Result rc_mask = PinCurrentThread(ideal_core, core_mask, prio, &rc_prio);
+  int32_t actual_core = -1;
+  uint32_t applied_mask = 0;
+  const Result rc_mask = PinCurrentThread(ideal_core, core_mask, prio, &rc_prio, &actual_core, &applied_mask);
   timeshift::telemetry::g_game_core_mask.fetch_or(1u << svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
   static std::atomic<uint32_t> s_worker_pin_logs{0};
   if (s_worker_pin_logs.fetch_add(1, std::memory_order_relaxed) < 20u) {
-    REXLOG_INFO("[cpu-pin] worker lr=0x{:08X} hw={} pinned ideal={} mask=0x{:X} rc=0x{:X} prio=0x{:X} rc=0x{:X}",
-                caller_lr, guest_hw, ideal_core, core_mask, uint32_t(rc_mask), uint32_t(prio), uint32_t(rc_prio));
+    REXLOG_INFO("[cpu-pin] worker lr=0x{:08X} hw={} role={} pinned ideal={} applied_mask=0x{:X} (allowed=0x{:X}) cur_core={} rc=0x{:X} prio=0x{:X} rc=0x{:X}",
+                caller_lr, guest_hw, role, ideal_core, applied_mask, QueryAllowedCoreMask(), actual_core,
+                uint32_t(rc_mask), uint32_t(prio), uint32_t(rc_prio));
   }
 #else
   (void)guest_hw;
@@ -589,14 +710,18 @@ REX_EXTERN(sub_821455E8) {
   __imp__sub_821455E8(ctx, base);
 #if defined(__SWITCH__)
   if (!g_thread_core_pinned) {
+    timeshift::telemetry::t_thread_role = 5;
     Result rc_prio = 0;
-    const Result rc_mask = PinCurrentThread(3, 0x8u, 0x28, &rc_prio);
+    int32_t actual_core = -1;
+    uint32_t applied_mask = 0;
+    const Result rc_mask = PinCurrentThread(1, 0x6u, 0x28, &rc_prio, &actual_core, &applied_mask);
     static std::atomic<uint32_t> s_wait_pin_logs{0};
     if (s_wait_pin_logs.fetch_add(1, std::memory_order_relaxed) < 16u) {
-      REXLOG_INFO("[cpu-pin] unpinned waiter pinned ideal=3 mask=0x8 rc=0x{:X} prio=0x28 rc=0x{:X}",
-                  uint32_t(rc_mask), uint32_t(rc_prio));
+      REXLOG_INFO("[cpu-pin] unpinned waiter pinned ideal=1 applied_mask=0x{:X} (allowed=0x{:X}) cur_core={} rc=0x{:X} prio=0x28 rc=0x{:X}",
+                  applied_mask, QueryAllowedCoreMask(), actual_core, uint32_t(rc_mask), uint32_t(rc_prio));
     }
   }
+  timeshift::telemetry::AccountThreadCpuTicks(timeshift::telemetry::t_thread_role);
   static thread_local uint32_t s_wait_probe = 0;
   const uint32_t probe = s_wait_probe++;
   if (probe == 0 || (probe & 15u) == 0) {
@@ -607,6 +732,12 @@ REX_EXTERN(sub_821455E8) {
 
 namespace {
 inline void LockFreeInterlockedAdd32(PPCContext& ctx, uint8_t* base, int32_t delta) {
+#if defined(__SWITCH__)
+  static thread_local uint32_t s_sim_probe = 0;
+  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_probe & 1023u) == 0u) {
+    timeshift::telemetry::AccountThreadCpuTicks(0);
+  }
+#endif
   uint32_t* ptr = GuestWordPtr(base, ctx.r3.u32);
   uint32_t cur_be = __atomic_load_n(ptr, __ATOMIC_RELAXED);
   uint64_t next_u64 = 0;
@@ -690,11 +821,14 @@ REX_EXTERN(sub_8214F008) {
 
 REX_EXTERN(sub_828172A8) {
 #if defined(__SWITCH__)
+  timeshift::telemetry::t_thread_role = 4;
   if (!g_thread_core_pinned) {
     Result rc_prio = 0;
-    const Result rc_mask = PinCurrentThread(1, (1u << 1) | (1u << 2), 0x21, &rc_prio);
-    REXLOG_INFO("[audio-thread] 828172A8 pinned ideal=1 mask=0x6 prio=0x21 (mask_rc=0x{:X} prio_rc=0x{:X})",
-                rc_mask, rc_prio);
+    int32_t actual_core = -1;
+    uint32_t applied_mask = 0;
+    const Result rc_mask = PinCurrentThread(2, 0x4u, 0x21, &rc_prio, &actual_core, &applied_mask);
+    REXLOG_INFO("[audio-thread] 828172A8 pinned ideal=2 mask=0x{:X} (allowed=0x{:X}) cur_core={} prio=0x21 (mask_rc=0x{:X} prio_rc=0x{:X})",
+                applied_mask, QueryAllowedCoreMask(), actual_core, rc_mask, rc_prio);
   }
 #endif
   __imp__sub_828172A8(ctx, base);
@@ -702,6 +836,7 @@ REX_EXTERN(sub_828172A8) {
 
 REX_EXTERN(sub_8287F678) {
 #if defined(__SWITCH__)
+  timeshift::telemetry::t_thread_role = 4;
   if (!g_thread_core_pinned) {
     char name[32] = {};
     const uint32_t obj_va = ctx.r3.u32;
@@ -713,11 +848,15 @@ REX_EXTERN(sub_8287F678) {
       }
     }
     const bool is_fmod_mixer = (std::strncmp(name, "FMOD mixer", 10) == 0);
+    const int32_t ideal_core = is_fmod_mixer ? 2 : 1;
+    const uint32_t core_mask = is_fmod_mixer ? 0x4u : 0x6u;
     const int32_t prio = is_fmod_mixer ? 0x22 : 0x26;
     Result rc_prio = 0;
-    const Result rc_mask = PinCurrentThread(2, (1u << 1) | (1u << 2), prio, &rc_prio);
-    REXLOG_INFO("[audio-thread] 8287F678 name='{}' pinned ideal=2 mask=0x6 prio=0x{:X} (mask_rc=0x{:X} prio_rc=0x{:X})",
-                name, uint32_t(prio), rc_mask, rc_prio);
+    int32_t actual_core = -1;
+    uint32_t applied_mask = 0;
+    const Result rc_mask = PinCurrentThread(ideal_core, core_mask, prio, &rc_prio, &actual_core, &applied_mask);
+    REXLOG_INFO("[audio-thread] 8287F678 name='{}' pinned ideal={} mask=0x{:X} (allowed=0x{:X}) cur_core={} prio=0x{:X} (mask_rc=0x{:X} prio_rc=0x{:X})",
+                name, ideal_core, applied_mask, QueryAllowedCoreMask(), actual_core, uint32_t(prio), rc_mask, rc_prio);
   }
 #endif
   __imp__sub_8287F678(ctx, base);
@@ -725,14 +864,680 @@ REX_EXTERN(sub_8287F678) {
 
 REX_EXTERN(sub_82B08E80) {
 #if defined(__SWITCH__)
+  timeshift::telemetry::t_thread_role = 4;
   if (!g_thread_core_pinned) {
     Result rc_prio = 0;
-    const Result rc_mask = PinCurrentThread(2, (1u << 1) | (1u << 2), 0x25, &rc_prio);
-    REXLOG_INFO("[audio-thread] 82B08E80 pinned ideal=2 mask=0x6 prio=0x25 (mask_rc=0x{:X} prio_rc=0x{:X})",
-                rc_mask, rc_prio);
+    int32_t actual_core = -1;
+    uint32_t applied_mask = 0;
+    const Result rc_mask = PinCurrentThread(2, 0x6u, 0x26, &rc_prio, &actual_core, &applied_mask);
+    REXLOG_INFO("[audio-thread] 82B08E80 pinned ideal=2 mask=0x{:X} (allowed=0x{:X}) cur_core={} prio=0x26 (mask_rc=0x{:X} prio_rc=0x{:X})",
+                applied_mask, QueryAllowedCoreMask(), actual_core, rc_mask, rc_prio);
   }
 #endif
   __imp__sub_82B08E80(ctx, base);
+}
+
+namespace timeshift::telemetry {
+void AccountThreadCpuTicks(int role) {
+#if defined(__SWITCH__)
+  if (role < 0 || role >= 6) return;
+  u64 now_ticks = 0;
+  Result rc = svcGetInfo(&now_ticks, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total);
+  if (R_FAILED(rc)) {
+    rc = svcGetInfo(&now_ticks, InfoType_ThreadTickCountDeprecated, CUR_THREAD_HANDLE, TickCountInfo_Total);
+  }
+  if (R_FAILED(rc)) return;
+  if (g_prev_thread_cpu_ticks != 0u && now_ticks > g_prev_thread_cpu_ticks) {
+    g_role_cpu_ticks[role].fetch_add(now_ticks - g_prev_thread_cpu_ticks, std::memory_order_relaxed);
+  }
+  g_prev_thread_cpu_ticks = now_ticks;
+#else
+  (void)role;
+#endif
+}
+}  // namespace timeshift::telemetry
+
+namespace {
+
+inline int16_t LoadBeS16(const uint8_t* p) noexcept {
+  uint16_t raw = 0;
+  std::memcpy(&raw, p, sizeof(raw));
+  return static_cast<int16_t>(__builtin_bswap16(raw));
+}
+
+inline void StoreBeS16(uint8_t* p, int16_t v) noexcept {
+  const uint16_t be = __builtin_bswap16(static_cast<uint16_t>(v));
+  std::memcpy(p, &be, sizeof(be));
+}
+
+inline float LoadBeF32(const uint8_t* p) noexcept {
+  uint32_t raw = 0;
+  std::memcpy(&raw, p, sizeof(raw));
+  return std::bit_cast<float>(__builtin_bswap32(raw));
+}
+
+inline void StoreBeF32(uint8_t* p, float v) noexcept {
+  const uint32_t be = __builtin_bswap32(std::bit_cast<uint32_t>(v));
+  std::memcpy(p, &be, sizeof(be));
+}
+
+inline uint32_t LoadBeU32(const uint8_t* p) noexcept {
+  uint32_t raw = 0;
+  std::memcpy(&raw, p, sizeof(raw));
+  return __builtin_bswap32(raw);
+}
+
+inline uint64_t LoadBeU64(const uint8_t* p) noexcept {
+  uint64_t raw = 0;
+  std::memcpy(&raw, p, sizeof(raw));
+  return __builtin_bswap64(raw);
+}
+
+inline void StoreBeU64(uint8_t* p, uint64_t v) noexcept {
+  const uint64_t be = __builtin_bswap64(v);
+  std::memcpy(p, &be, sizeof(be));
+}
+
+inline void MaybeAccountAudioTicks(uint32_t mask) noexcept {
+#if defined(__SWITCH__)
+  static thread_local uint32_t s_aud_probe = 0;
+  if (timeshift::telemetry::t_thread_role == 4 && (++s_aud_probe & mask) == 0u) {
+    timeshift::telemetry::AccountThreadCpuTicks(4);
+  }
+#else
+  (void)mask;
+#endif
+}
+
+inline const uint8_t* GuestReadPtr(const uint8_t* base, uint32_t ea) noexcept {
+  return base + ea + CrtPhysOff(ea);
+}
+
+template <bool Linear>
+bool TryNativeFmodResampler(PPCContext& ctx, uint8_t* base) noexcept {
+  const uint32_t out_va = ctx.r3.u32;
+  const int32_t length = ctx.r4.s32;
+  const uint32_t in_va = ctx.r5.u32;
+  const int32_t format = ctx.r6.s32;
+  const uint32_t pos_va = ctx.r7.u32;
+  const uint32_t spd_va = ctx.r8.u32;
+  const int32_t channels = ctx.r9.s32;
+
+  if (length <= 0) return true;
+  if (!out_va || !in_va || !pos_va || !spd_va) return false;
+  if (channels <= 0 || channels > 8) return false;
+  if (format != 1 && format != 2 && format != 5) return false;
+
+  MaybeAccountAudioTicks(63u);
+
+  uint8_t* out = base + out_va + CrtPhysOff(out_va);
+  uint8_t* pos_ptr = base + pos_va + CrtPhysOff(pos_va);
+  const uint8_t* spd_ptr = GuestReadPtr(base, spd_va);
+
+  uint64_t pos = LoadBeU64(pos_ptr);
+  const uint64_t spd = LoadBeU64(spd_ptr);
+  if (spd == 0x8000000000000000ULL) {
+    static std::atomic<uint32_t> s_nan_spd_hits{0};
+    if (s_nan_spd_hits.fetch_add(1, std::memory_order_relaxed) < 4u) {
+      REXLOG_WARN("[fmod] resampler guarded INT64_MIN (NaN) speed fmt={} ch={} len={}",
+                  format, channels, length);
+    }
+    std::memset(out, 0, size_t(length) * size_t(channels) * 4u);
+    return true;
+  }
+
+  constexpr float kInv128 = 1.0f / 128.0f;
+  constexpr float kInv32768 = 1.0f / 32768.0f;
+  constexpr float kInv2Pow32 = 1.0f / 4294967296.0f;
+
+  if constexpr (!Linear) {
+    if (format == 2 && channels == 1) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 1));
+        StoreBeF32(out + size_t(i) * 4u, static_cast<float>(LoadBeS16(GuestReadPtr(base, ea))) * kInv32768);
+      }
+    } else if (format == 2 && channels == 2) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 2));
+        StoreBeF32(out + size_t(i) * 8u, static_cast<float>(LoadBeS16(GuestReadPtr(base, ea))) * kInv32768);
+        StoreBeF32(out + size_t(i) * 8u + 4u,
+                   static_cast<float>(LoadBeS16(GuestReadPtr(base, static_cast<uint32_t>(ea + 2u)))) * kInv32768);
+      }
+    } else if (format == 5 && channels == 1) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 2));
+        std::memcpy(out + size_t(i) * 4u, GuestReadPtr(base, ea), 4u);
+      }
+    } else if (format == 5 && channels == 2) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 3));
+        std::memcpy(out + size_t(i) * 8u, GuestReadPtr(base, ea), 8u);
+      }
+    } else {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t base_s = static_cast<uint32_t>(idx * static_cast<uint32_t>(channels));
+        uint8_t* dst = out + size_t(i) * size_t(channels) * 4u;
+        if (format == 2) {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea = static_cast<uint32_t>(in_va + ((base_s + static_cast<uint32_t>(ch)) << 1));
+            StoreBeF32(dst + size_t(ch) * 4u,
+                       static_cast<float>(LoadBeS16(GuestReadPtr(base, ea))) * kInv32768);
+          }
+        } else if (format == 5) {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea = static_cast<uint32_t>(in_va + ((base_s + static_cast<uint32_t>(ch)) << 2));
+            std::memcpy(dst + size_t(ch) * 4u, GuestReadPtr(base, ea), 4u);
+          }
+        } else {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea = static_cast<uint32_t>(in_va + base_s + static_cast<uint32_t>(ch));
+            const int8_t s = static_cast<int8_t>(*GuestReadPtr(base, ea));
+            StoreBeF32(dst + size_t(ch) * 4u, static_cast<float>(s) * kInv128);
+          }
+        }
+      }
+    }
+  } else {
+    if (format == 2 && channels == 1) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea0 = static_cast<uint32_t>(in_va + (idx << 1));
+        const uint32_t ea1 = static_cast<uint32_t>(ea0 + 2u);
+        const float frac = static_cast<float>(static_cast<uint32_t>(pos)) * kInv2Pow32;
+        const float inv = 1.0f - frac;
+        const float s0 = static_cast<float>(LoadBeS16(GuestReadPtr(base, ea0))) * kInv32768;
+        const float s1 = static_cast<float>(LoadBeS16(GuestReadPtr(base, ea1))) * kInv32768;
+        StoreBeF32(out + size_t(i) * 4u, s0 * inv + s1 * frac);
+      }
+    } else if (format == 2 && channels == 2) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 2));
+        const float frac = static_cast<float>(static_cast<uint32_t>(pos)) * kInv2Pow32;
+        const float inv = 1.0f - frac;
+        const float l0 = static_cast<float>(LoadBeS16(GuestReadPtr(base, ea))) * kInv32768;
+        const float r0 = static_cast<float>(LoadBeS16(GuestReadPtr(base, static_cast<uint32_t>(ea + 2u)))) * kInv32768;
+        const float l1 = static_cast<float>(LoadBeS16(GuestReadPtr(base, static_cast<uint32_t>(ea + 4u)))) * kInv32768;
+        const float r1 = static_cast<float>(LoadBeS16(GuestReadPtr(base, static_cast<uint32_t>(ea + 6u)))) * kInv32768;
+        StoreBeF32(out + size_t(i) * 8u, l0 * inv + l1 * frac);
+        StoreBeF32(out + size_t(i) * 8u + 4u, r0 * inv + r1 * frac);
+      }
+    } else if (format == 5 && channels == 1) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea0 = static_cast<uint32_t>(in_va + (idx << 2));
+        const uint32_t ea1 = static_cast<uint32_t>(ea0 + 4u);
+        const float frac = static_cast<float>(static_cast<uint32_t>(pos)) * kInv2Pow32;
+        const float inv = 1.0f - frac;
+        const float s0 = LoadBeF32(GuestReadPtr(base, ea0));
+        const float s1 = LoadBeF32(GuestReadPtr(base, ea1));
+        StoreBeF32(out + size_t(i) * 4u, s0 * inv + s1 * frac);
+      }
+    } else if (format == 5 && channels == 2) {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t ea = static_cast<uint32_t>(in_va + (idx << 3));
+        const float frac = static_cast<float>(static_cast<uint32_t>(pos)) * kInv2Pow32;
+        const float inv = 1.0f - frac;
+        const float l0 = LoadBeF32(GuestReadPtr(base, ea));
+        const float r0 = LoadBeF32(GuestReadPtr(base, static_cast<uint32_t>(ea + 4u)));
+        const float l1 = LoadBeF32(GuestReadPtr(base, static_cast<uint32_t>(ea + 8u)));
+        const float r1 = LoadBeF32(GuestReadPtr(base, static_cast<uint32_t>(ea + 12u)));
+        StoreBeF32(out + size_t(i) * 8u, l0 * inv + l1 * frac);
+        StoreBeF32(out + size_t(i) * 8u + 4u, r0 * inv + r1 * frac);
+      }
+    } else {
+      for (int32_t i = 0; i < length; ++i, pos += spd) {
+        const uint32_t idx = static_cast<uint32_t>(pos >> 32);
+        const uint32_t base_s = static_cast<uint32_t>(idx * static_cast<uint32_t>(channels));
+        const uint32_t next_s = static_cast<uint32_t>(base_s + static_cast<uint32_t>(channels));
+        const float frac = static_cast<float>(static_cast<uint32_t>(pos)) * kInv2Pow32;
+        const float inv = 1.0f - frac;
+        uint8_t* dst = out + size_t(i) * size_t(channels) * 4u;
+        if (format == 2) {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea0 = static_cast<uint32_t>(in_va + ((base_s + static_cast<uint32_t>(ch)) << 1));
+            const uint32_t ea1 = static_cast<uint32_t>(in_va + ((next_s + static_cast<uint32_t>(ch)) << 1));
+            const float s0 = static_cast<float>(LoadBeS16(GuestReadPtr(base, ea0))) * kInv32768;
+            const float s1 = static_cast<float>(LoadBeS16(GuestReadPtr(base, ea1))) * kInv32768;
+            StoreBeF32(dst + size_t(ch) * 4u, s0 * inv + s1 * frac);
+          }
+        } else if (format == 5) {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea0 = static_cast<uint32_t>(in_va + ((base_s + static_cast<uint32_t>(ch)) << 2));
+            const uint32_t ea1 = static_cast<uint32_t>(in_va + ((next_s + static_cast<uint32_t>(ch)) << 2));
+            const float s0 = LoadBeF32(GuestReadPtr(base, ea0));
+            const float s1 = LoadBeF32(GuestReadPtr(base, ea1));
+            StoreBeF32(dst + size_t(ch) * 4u, s0 * inv + s1 * frac);
+          }
+        } else {
+          for (int32_t ch = 0; ch < channels; ++ch) {
+            const uint32_t ea0 = static_cast<uint32_t>(in_va + base_s + static_cast<uint32_t>(ch));
+            const uint32_t ea1 = static_cast<uint32_t>(in_va + next_s + static_cast<uint32_t>(ch));
+            const float s0 = static_cast<float>(static_cast<int8_t>(*GuestReadPtr(base, ea0))) * kInv128;
+            const float s1 = static_cast<float>(static_cast<int8_t>(*GuestReadPtr(base, ea1))) * kInv128;
+            StoreBeF32(dst + size_t(ch) * 4u, s0 * inv + s1 * frac);
+          }
+        }
+      }
+    }
+  }
+
+  StoreBeU64(pos_ptr, pos);
+  return true;
+}
+
+}  // namespace
+
+REX_EXTERN(sub_828DEE18) {
+  if (!TryNativeFmodResampler<false>(ctx, base)) {
+    __imp__sub_828DEE18(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_828D7818) {
+  if (!TryNativeFmodResampler<true>(ctx, base)) {
+    __imp__sub_828D7818(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_828DC538) {
+  if (!TryNativeFmodResampler<true>(ctx, base)) {
+    __imp__sub_828DC538(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_828DA770) {
+  if (!TryNativeFmodResampler<true>(ctx, base)) {
+    __imp__sub_828DA770(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_828C80D0) {
+  if (!std::isfinite(ctx.f1.f64)) {
+    static std::atomic<uint32_t> s_nan_freq_hits{0};
+    if (s_nan_freq_hits.fetch_add(1, std::memory_order_relaxed) < 4u) {
+      REXLOG_WARN("[fmod] clamped non-finite DSPResampler frequency (bits=0x{:08X}) to 0",
+                  std::bit_cast<uint32_t>(static_cast<float>(ctx.f1.f64)));
+    }
+    ctx.f1.f64 = 0.0;
+  }
+  __imp__sub_828C80D0(ctx, base);
+}
+
+REX_EXTERN(sub_828DFCC0) {
+  const uint32_t out_va = ctx.r3.u32;
+  const uint32_t in_va = ctx.r4.u32;
+  const int32_t outfmt = ctx.r5.s32;
+  const int32_t infmt = ctx.r6.s32;
+  const int32_t length = ctx.r7.s32;
+  const int32_t dst_step = ctx.r8.s32;
+  const int32_t src_step = ctx.r9.s32;
+  const float vol = static_cast<float>(ctx.f1.f64);
+
+  if (length <= 0) {
+    ctx.r3.u64 = 0u;
+    return;
+  }
+  if (out_va && in_va && dst_step == 1 && src_step == 1) {
+    uint8_t* out = base + out_va + CrtPhysOff(out_va);
+    const uint8_t* in = base + in_va + CrtPhysOff(in_va);
+    if (outfmt == 5 && infmt == 5) {
+      if (vol == 1.0f) {
+        if (out_va != in_va) std::memmove(out, in, size_t(length) * 4u);
+      } else {
+        for (int32_t i = 0; i < length; ++i) {
+          StoreBeF32(out + ptrdiff_t(i) * 4, LoadBeF32(in + ptrdiff_t(i) * 4) * vol);
+        }
+      }
+      ctx.r3.u64 = 0u;
+      return;
+    }
+    if (outfmt == 2 && infmt == 5) {
+      const float scale = vol * 32768.0f;
+      for (int32_t i = 0; i < length; ++i) {
+        const float x = LoadBeF32(in + ptrdiff_t(i) * 4) * scale;
+        const int32_t q = !(x > -32768.0f) ? -32768 : (x >= 32767.0f) ? 32767 : static_cast<int32_t>(x);
+        StoreBeS16(out + ptrdiff_t(i) * 2, static_cast<int16_t>(q));
+      }
+      ctx.r3.u64 = 0u;
+      return;
+    }
+    if (outfmt == 5 && infmt == 2) {
+      const float scale = vol * (1.0f / 32768.0f);
+      if (out_va >= in_va && out_va < in_va + uint32_t(length) * 2u) {
+        for (int32_t i = length - 1; i >= 0; --i) {
+          StoreBeF32(out + ptrdiff_t(i) * 4, static_cast<float>(LoadBeS16(in + ptrdiff_t(i) * 2)) * scale);
+        }
+      } else {
+        for (int32_t i = 0; i < length; ++i) {
+          StoreBeF32(out + ptrdiff_t(i) * 4, static_cast<float>(LoadBeS16(in + ptrdiff_t(i) * 2)) * scale);
+        }
+      }
+      ctx.r3.u64 = 0u;
+      return;
+    }
+  }
+  __imp__sub_828DFCC0(ctx, base);
+}
+
+namespace {
+
+inline void FmodMixMonoTo2(uint8_t* out, const uint8_t* in, uint32_t length, float v0, float v1) noexcept {
+  if (v0 == 0.0f && v1 == 0.0f) return;
+  for (uint32_t i = 0; i < length; ++i) {
+    const float s = LoadBeF32(in + size_t(i) * 4u);
+    uint8_t* dst = out + size_t(i) * 8u;
+    if (v0 != 0.0f) StoreBeF32(dst, LoadBeF32(dst) + s * v0);
+    if (v1 != 0.0f) StoreBeF32(dst + 4u, LoadBeF32(dst + 4u) + s * v1);
+  }
+}
+
+inline void FmodMix2To2Diag(uint8_t* out, const uint8_t* in, uint32_t length, float v0, float v1) noexcept {
+  if (v0 == 0.0f && v1 == 0.0f) return;
+  for (uint32_t i = 0; i < length; ++i) {
+    const uint8_t* src = in + size_t(i) * 8u;
+    uint8_t* dst = out + size_t(i) * 8u;
+    if (v0 != 0.0f) StoreBeF32(dst, LoadBeF32(dst) + LoadBeF32(src) * v0);
+    if (v1 != 0.0f) StoreBeF32(dst + 4u, LoadBeF32(dst + 4u) + LoadBeF32(src + 4u) * v1);
+  }
+}
+
+inline void FmodMixMonoTo6(uint8_t* out, const uint8_t* in, uint32_t length, const float g[6]) noexcept {
+  uint32_t active[6];
+  uint32_t n = 0;
+  for (uint32_t c = 0; c < 6u; ++c) {
+    if (g[c] != 0.0f) active[n++] = c;
+  }
+  if (n == 0u) return;
+  for (uint32_t i = 0; i < length; ++i) {
+    const float s = LoadBeF32(in + size_t(i) * 4u);
+    uint8_t* dst = out + size_t(i) * 24u;
+    for (uint32_t k = 0; k < n; ++k) {
+      const uint32_t c = active[k];
+      uint8_t* p = dst + c * 4u;
+      StoreBeF32(p, LoadBeF32(p) + s * g[c]);
+    }
+  }
+}
+
+inline void FmodMix6To6Diag(uint8_t* out, const uint8_t* in, uint32_t length, const float g[6]) noexcept {
+  uint32_t active[6];
+  uint32_t n = 0;
+  for (uint32_t c = 0; c < 6u; ++c) {
+    if (g[c] != 0.0f) active[n++] = c;
+  }
+  if (n == 0u) return;
+  for (uint32_t i = 0; i < length; ++i) {
+    const uint8_t* src = in + size_t(i) * 24u;
+    uint8_t* dst = out + size_t(i) * 24u;
+    for (uint32_t k = 0; k < n; ++k) {
+      const uint32_t c = active[k];
+      uint8_t* p = dst + c * 4u;
+      StoreBeF32(p, LoadBeF32(p) + LoadBeF32(src + c * 4u) * g[c]);
+    }
+  }
+}
+
+}  // namespace
+
+REX_EXTERN(sub_828D6248) {
+  const uint32_t in_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  const uint32_t length = ctx.r5.u32;
+  if (length == 0u) return;
+  if (!in_va || !out_va) {
+    __imp__sub_828D6248(ctx, base);
+    return;
+  }
+  MaybeAccountAudioTicks(31u);
+  FmodMixMonoTo2(base + out_va + CrtPhysOff(out_va), base + in_va + CrtPhysOff(in_va), length,
+                 static_cast<float>(ctx.f1.f64), static_cast<float>(ctx.f2.f64));
+}
+
+REX_EXTERN(sub_828D6328) {
+  const uint32_t in_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  const uint32_t length = ctx.r5.u32;
+  if (length == 0u) return;
+  if (!in_va || !out_va) {
+    __imp__sub_828D6328(ctx, base);
+    return;
+  }
+  MaybeAccountAudioTicks(31u);
+  FmodMix2To2Diag(base + out_va + CrtPhysOff(out_va), base + in_va + CrtPhysOff(in_va), length,
+                  static_cast<float>(ctx.f1.f64), static_cast<float>(ctx.f2.f64));
+}
+
+REX_EXTERN(sub_828D6418) {
+  const uint32_t in_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  const uint32_t length = ctx.r5.u32;
+  const uint32_t g03_va = ctx.r6.u32;
+  const uint32_t g45_va = ctx.r7.u32;
+  if (length == 0u) return;
+  if (!in_va || !out_va || !g03_va || !g45_va) {
+    __imp__sub_828D6418(ctx, base);
+    return;
+  }
+  MaybeAccountAudioTicks(31u);
+  const uint8_t* g03 = base + g03_va + CrtPhysOff(g03_va);
+  const uint8_t* g45 = base + g45_va + CrtPhysOff(g45_va);
+  const float g[6] = {LoadBeF32(g03), LoadBeF32(g03 + 4), LoadBeF32(g03 + 8),
+                      LoadBeF32(g03 + 12), LoadBeF32(g45), LoadBeF32(g45 + 4)};
+  FmodMixMonoTo6(base + out_va + CrtPhysOff(out_va), base + in_va + CrtPhysOff(in_va), length, g);
+}
+
+REX_EXTERN(sub_828D65E0) {
+  const uint32_t in_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  const uint32_t length = ctx.r5.u32;
+  const uint32_t g03_va = ctx.r6.u32;
+  const uint32_t g45_va = ctx.r7.u32;
+  if (length == 0u) return;
+  if (!in_va || !out_va || !g03_va || !g45_va) {
+    __imp__sub_828D65E0(ctx, base);
+    return;
+  }
+  MaybeAccountAudioTicks(31u);
+  const uint8_t* g03 = base + g03_va + CrtPhysOff(g03_va);
+  const uint8_t* g45 = base + g45_va + CrtPhysOff(g45_va);
+  const float g[6] = {LoadBeF32(g03), LoadBeF32(g03 + 4), LoadBeF32(g03 + 8),
+                      LoadBeF32(g03 + 12), LoadBeF32(g45), LoadBeF32(g45 + 4)};
+  FmodMix6To6Diag(base + out_va + CrtPhysOff(out_va), base + in_va + CrtPhysOff(in_va), length, g);
+}
+
+REX_EXTERN(sub_828C05A8) {
+  const uint32_t conn_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  const uint32_t in_va = ctx.r5.u32;
+  const int32_t out_ch = ctx.r6.s32;
+  const int32_t in_ch = ctx.r7.s32;
+  const uint32_t length = ctx.r8.u32;
+  if (in_va == 0u || length == 0u) {
+    ctx.r3.u64 = 0u;
+    return;
+  }
+  if (!conn_va || !out_va || out_ch <= 0 || out_ch > 8 || in_ch <= 0 || in_ch > 8) {
+    __imp__sub_828C05A8(ctx, base);
+    return;
+  }
+  const uint8_t* conn = base + conn_va + CrtPhysOff(conn_va);
+  if (LoadBeS16(conn + 112u) != 0) {
+    __imp__sub_828C05A8(ctx, base);
+    return;
+  }
+  if (LoadBeF32(conn + 116u) == 0.0f) {
+    ctx.r3.u64 = 0u;
+    return;
+  }
+  MaybeAccountAudioTicks(31u);
+
+  float m[8][8]{};
+  uint32_t active_rows[8]{};
+  uint32_t active_n = 0u;
+  for (int32_t o = 0; o < out_ch; ++o) {
+    const uint32_t row_va = LoadBeU32(conn + 56u + uint32_t(o) * 4u);
+    if (row_va == 0u) continue;
+    const uint8_t* row = base + row_va + CrtPhysOff(row_va);
+    bool nz = false;
+    for (int32_t i = 0; i < in_ch; ++i) {
+      const float v = LoadBeF32(row + uint32_t(i) * 4u);
+      m[o][i] = v;
+      if (v != 0.0f) nz = true;
+    }
+    if (nz) active_rows[active_n++] = static_cast<uint32_t>(o);
+  }
+  if (active_n == 0u) {
+    ctx.r3.u64 = 0u;
+    return;
+  }
+
+  uint8_t* out = base + out_va + CrtPhysOff(out_va);
+  const uint8_t* in = base + in_va + CrtPhysOff(in_va);
+
+  if (out_ch == 6 && in_ch == 1) {
+    const float g[6] = {m[0][0], m[1][0], m[2][0], m[3][0], m[4][0], m[5][0]};
+    FmodMixMonoTo6(out, in, length, g);
+  } else if (out_ch == 6 && in_ch == 2) {
+    for (uint32_t t = 0; t < length; ++t) {
+      const uint8_t* src = in + size_t(t) * 8u;
+      const float s0 = LoadBeF32(src);
+      const float s1 = LoadBeF32(src + 4u);
+      uint8_t* dst = out + size_t(t) * 24u;
+      for (uint32_t k = 0; k < active_n; ++k) {
+        const uint32_t o = active_rows[k];
+        uint8_t* p = dst + o * 4u;
+        StoreBeF32(p, LoadBeF32(p) + s0 * m[o][0] + s1 * m[o][1]);
+      }
+    }
+  } else if (out_ch == 6 && in_ch == 6) {
+    bool is_diag = true;
+    for (int32_t o = 0; o < 6 && is_diag; ++o) {
+      for (int32_t i = 0; i < 6; ++i) {
+        if (o != i && m[o][i] != 0.0f) {
+          is_diag = false;
+          break;
+        }
+      }
+    }
+    if (is_diag) {
+      const float g[6] = {m[0][0], m[1][1], m[2][2], m[3][3], m[4][4], m[5][5]};
+      FmodMix6To6Diag(out, in, length, g);
+    } else {
+      for (uint32_t t = 0; t < length; ++t) {
+        const uint8_t* src = in + size_t(t) * 24u;
+        const float s[6] = {LoadBeF32(src), LoadBeF32(src + 4u), LoadBeF32(src + 8u),
+                            LoadBeF32(src + 12u), LoadBeF32(src + 16u), LoadBeF32(src + 20u)};
+        uint8_t* dst = out + size_t(t) * 24u;
+        for (uint32_t k = 0; k < active_n; ++k) {
+          const uint32_t o = active_rows[k];
+          const float sum = s[0] * m[o][0] + s[1] * m[o][1] + s[2] * m[o][2] +
+                            s[3] * m[o][3] + s[4] * m[o][4] + s[5] * m[o][5];
+          uint8_t* p = dst + o * 4u;
+          StoreBeF32(p, LoadBeF32(p) + sum);
+        }
+      }
+    }
+  } else if (out_ch == 2 && in_ch == 1) {
+    FmodMixMonoTo2(out, in, length, m[0][0], m[1][0]);
+  } else if (out_ch == 2 && in_ch == 2 && m[0][1] == 0.0f && m[1][0] == 0.0f) {
+    FmodMix2To2Diag(out, in, length, m[0][0], m[1][1]);
+  } else {
+    const size_t in_stride = size_t(in_ch) * 4u;
+    const size_t out_stride = size_t(out_ch) * 4u;
+    for (uint32_t t = 0; t < length; ++t) {
+      const uint8_t* src = in + size_t(t) * in_stride;
+      float s[8];
+      for (int32_t i = 0; i < in_ch; ++i) {
+        s[i] = LoadBeF32(src + uint32_t(i) * 4u);
+      }
+      uint8_t* dst = out + size_t(t) * out_stride;
+      for (uint32_t k = 0; k < active_n; ++k) {
+        const uint32_t o = active_rows[k];
+        float sum = 0.0f;
+        for (int32_t i = 0; i < in_ch; ++i) {
+          sum += s[i] * m[o][i];
+        }
+        uint8_t* p = dst + o * 4u;
+        StoreBeF32(p, LoadBeF32(p) + sum);
+      }
+    }
+  }
+  ctx.r3.u64 = 0u;
+}
+
+REX_EXTERN(sub_828C6470) {
+  MaybeAccountAudioTicks(15u);
+  if (REXCVAR_GET(renut_audio_reverb)) {
+    __imp__sub_828C6470(ctx, base);
+    return;
+  }
+  const uint32_t in_va = ctx.r4.u32;
+  const uint32_t out_va = ctx.r5.u32;
+  const int32_t channels = ctx.r6.s32;
+  const uint32_t length = ctx.r7.u32;
+  const float dry_gain = static_cast<float>(ctx.f2.f64);
+  if (channels > 0 && length > 0u && out_va != 0u) {
+    const uint64_t total = uint64_t(channels) * uint64_t(length);
+    uint8_t* out = base + out_va + CrtPhysOff(out_va);
+    if (dry_gain == 0.0f || in_va == 0u) {
+      std::memset(out, 0, size_t(total * 4u));
+    } else if (dry_gain == 1.0f) {
+      if (in_va != out_va) {
+        std::memmove(out, base + in_va + CrtPhysOff(in_va), size_t(total * 4u));
+      }
+    } else {
+      const uint8_t* in = base + in_va + CrtPhysOff(in_va);
+      for (uint64_t i = 0; i < total; ++i) {
+        StoreBeF32(out + size_t(i) * 4u, LoadBeF32(in + size_t(i) * 4u) * dry_gain);
+      }
+    }
+  }
+}
+
+REX_EXTERN(sub_8281AE38) {
+#if defined(__SWITCH__)
+  timeshift::telemetry::t_thread_role = 4;
+#endif
+  __imp__sub_8281AE38(ctx, base);
+  MaybeAccountAudioTicks(31u);
+}
+
+REX_EXTERN(sub_8281A8E8) {
+  const uint32_t ea = 0x82CBFC3Cu + (ctx.r3.u32 << 2);
+  uint32_t* ptr = GuestWordPtr(base, ea);
+  uint32_t cur_be = __atomic_load_n(ptr, __ATOMIC_RELAXED);
+  const uint32_t add_val = ctx.r4.u32;
+  uint32_t next_be = 0;
+  do {
+    next_be = __builtin_bswap32(__builtin_bswap32(cur_be) + add_val);
+  } while (!__atomic_compare_exchange_n(ptr, &cur_be, next_be, true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+  ctx.r3.u64 = 0u;
+}
+
+REX_EXTERN(sub_8264DCF0) {
+  const uint32_t obj_va = ctx.r3.u32;
+  uint32_t* ref_ptr = GuestWordPtr(base, obj_va + 4u);
+  uint32_t cur_be = __atomic_load_n(ref_ptr, __ATOMIC_RELAXED);
+  while (true) {
+    const uint32_t cur_val = __builtin_bswap32(cur_be);
+    if (cur_val <= 1u) {
+      __imp__sub_8264DCF0(ctx, base);
+      return;
+    }
+    const uint32_t next_val = cur_val - 1u;
+    const uint32_t next_be = __builtin_bswap32(next_val);
+    if (__atomic_compare_exchange_n(ref_ptr, &cur_be, next_be, true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+      ctx.r3.u64 = uint64_t(next_val);
+      return;
+    }
+  }
 }
 
 REX_EXTERN(sub_82150CE0) {
@@ -756,4 +1561,160 @@ REX_EXTERN(sub_82151D58) {
 REX_EXTERN(sub_82151A58) {
   o1_guest_heap::HeapGuard lock;
   ctx.r3.u64 = o1_guest_heap::ReallocLocked(base, ctx.r4.u32, ctx.r5.u32);
+}
+
+REX_EXTERN(sub_8214ED50) {
+  const uint32_t ptr_va = ctx.r3.u32;
+  if (ptr_va != 0u) {
+    o1_guest_heap::HeapGuard lock;
+    o1_guest_heap::FreeLocked(base, ptr_va);
+  }
+}
+
+REX_EXTERN(sub_8214ED48) {
+  o1_guest_heap::HeapGuard lock;
+  ctx.r3.u64 = o1_guest_heap::MallocLocked(base, ctx.r3.u32);
+}
+
+REX_EXTERN(sub_8214ED58) {
+  const uint32_t sz = ctx.r3.u32 ? ctx.r3.u32 : 1u;
+  o1_guest_heap::HeapGuard lock;
+  ctx.r3.u64 = o1_guest_heap::MallocLocked(base, sz);
+}
+
+REX_EXTERN(sub_8214EEC0) {
+  const uint32_t ptr_va = ctx.r3.u32;
+  const uint32_t new_sz = ctx.r4.u32;
+  o1_guest_heap::HeapGuard lock;
+  if (ptr_va == 0u) {
+    ctx.r3.u64 = o1_guest_heap::MallocLocked(base, new_sz ? new_sz : 1u);
+  } else if (new_sz == 0u) {
+    o1_guest_heap::FreeLocked(base, ptr_va);
+    ctx.r3.u64 = 0u;
+  } else {
+    ctx.r3.u64 = o1_guest_heap::ReallocLocked(base, ptr_va, new_sz);
+  }
+}
+
+namespace {
+inline void NativeGuestMemMove(PPCContext& ctx, uint8_t* base) noexcept {
+  const uint32_t n = ctx.r5.u32;
+  const uint32_t dst_va = ctx.r3.u32;
+  const uint32_t src_va = ctx.r4.u32;
+  if (n != 0u && dst_va != src_va) {
+    std::memmove(base + dst_va + CrtPhysOff(dst_va),
+                 base + src_va + CrtPhysOff(src_va), n);
+  }
+}
+}  // namespace
+
+REX_EXTERN(sub_828E1800) {
+  NativeGuestMemMove(ctx, base);
+}
+
+REX_EXTERN(sub_82908B38) {
+  NativeGuestMemMove(ctx, base);
+}
+
+REX_EXTERN(sub_828E10C0) {
+  NativeGuestMemMove(ctx, base);
+}
+
+REX_EXTERN(sub_828E27E0) {
+  const uint32_t n = ctx.r5.u32;
+  if (n != 0u) {
+    const uint32_t dst_va = ctx.r3.u32;
+    std::memset(base + dst_va + CrtPhysOff(dst_va), static_cast<int>(ctx.r4.u8), n);
+  }
+}
+
+REX_EXTERN(sub_828E8360) {
+  const uint8_t* s1 = base + ctx.r3.u32 + CrtPhysOff(ctx.r3.u32);
+  const uint8_t* s2 = base + ctx.r4.u32 + CrtPhysOff(ctx.r4.u32);
+  int32_t diff = 0;
+  while (true) {
+    uint8_t a = *s1++;
+    uint8_t b = *s2++;
+    diff = int32_t(a) - int32_t(b);
+    if (b == 0) break;
+    if (diff == 0) continue;
+    if (b >= 'A' && b <= 'Z') b |= 32u;
+    if (a >= 'A' && a <= 'Z') a |= 32u;
+    diff = int32_t(a) - int32_t(b);
+    if (diff != 0) break;
+  }
+  ctx.r3.u64 = static_cast<uint64_t>(static_cast<int64_t>(diff));
+  ctx.cr0.compare<int32_t>(diff, 0, ctx.xer);
+}
+
+REX_EXTERN(sub_829087E0) {
+  const uint8_t* s1 = base + ctx.r3.u32 + CrtPhysOff(ctx.r3.u32);
+  const uint8_t* s2 = base + ctx.r4.u32 + CrtPhysOff(ctx.r4.u32);
+  int32_t diff = 0;
+  while (true) {
+    const uint8_t a = *s1++;
+    const uint8_t b = *s2++;
+    diff = int32_t(a) - int32_t(b);
+    if (a == 0 || diff != 0) break;
+  }
+  ctx.r3.u64 = static_cast<uint64_t>(static_cast<int64_t>(diff));
+}
+
+REX_EXTERN(sub_82908A30) {
+  const char* s = reinterpret_cast<const char*>(base + ctx.r3.u32 + CrtPhysOff(ctx.r3.u32));
+  ctx.r3.u64 = static_cast<uint32_t>(std::strlen(s));
+}
+
+REX_EXTERN(sub_828E1360) {
+  const uint32_t n = ctx.r5.u32;
+  if (n != 0u) {
+    char* dst = reinterpret_cast<char*>(base + ctx.r3.u32 + CrtPhysOff(ctx.r3.u32));
+    const char* src = reinterpret_cast<const char*>(base + ctx.r4.u32 + CrtPhysOff(ctx.r4.u32));
+    std::strncpy(dst, src, n);
+  }
+}
+
+// Native ARM64 CRT math overrides replacing recompiled PowerPC libm sequences.
+REX_EXTERN(sub_828E2C18) {
+  ctx.f1.f64 = std::cos(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E2B48) {
+  ctx.f1.f64 = std::sin(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E0E90) {
+  ctx.f1.f64 = std::tan(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E5F70) {
+  ctx.f1.f64 = std::atan2(ctx.f1.f64, ctx.f2.f64);
+}
+
+REX_EXTERN(sub_828E5CD0) {
+  ctx.f1.f64 = std::exp(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E3228) {
+  ctx.f1.f64 = std::log(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E3700) {
+  ctx.f1.f64 = std::pow(ctx.f1.f64, ctx.f2.f64);
+}
+
+REX_EXTERN(sub_828E2D08) {
+  ctx.f1.f64 = std::floor(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E4CD8) {
+  ctx.f1.f64 = std::ceil(ctx.f1.f64);
+}
+
+REX_EXTERN(sub_828E3D10) {
+  ctx.f1.f64 = static_cast<double>(ctx.r3.u64);
+}
+
+REX_EXTERN(sub_828E8420) {
+  ctx.r3.u64 = std::isfinite(ctx.f1.f64) ? 1ull : 0ull;
 }

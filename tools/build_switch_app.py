@@ -94,6 +94,7 @@ def compile_app_units():
         (ROOT / 'private/app/generated/default/timeshift_thunk_adjustors.cpp', BUILD_APP / 'timeshift_thunk_adjustors.o'),
         (ROOT / 'private/app/generated/default/timeshift_register.cpp', BUILD_APP / 'timeshift_register.o'),
         (ROOT / 'private/app/generated/default/timeshift_init.cpp', BUILD_APP / 'timeshift_init.o'),
+        (ROOT / 'private/sdk/src/ui/switch/windowed_app_main_switch.cpp', BUILD_APP / 'windowed_app_main_switch.o'),
         (ROOT / 'private/sdk/src/ui/switch/rex_app_switch.cpp', BUILD_APP / 'rex_app_switch.o'),
     ]
 
@@ -101,7 +102,8 @@ def compile_app_units():
         if obj.exists() and obj.stat().st_mtime >= src.stat().st_mtime:
             print(f"Up to date: {obj.name}")
             continue
-        cmd = [*flags, '-c', str(src), '-o', str(obj)]
+        extra = ['-O1'] if src.name in ('timeshift_register.cpp', 'timeshift_init.cpp') else []
+        cmd = [*flags, *extra, '-c', str(src), '-o', str(obj)]
         print(f"Compiling {src.name} -> {obj.name}...")
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
@@ -166,7 +168,7 @@ def collect_objects():
 
     # 2 Switch platform UI objects
     switch_ui_objs = [
-        Path('/root/lab/switch-build-app/CMakeFiles/timeshift.dir/root/lab/rexglue-sdk/src/ui/switch/windowed_app_main_switch.o'),
+        BUILD_APP / 'windowed_app_main_switch.o',
         BUILD_APP / 'rex_app_switch.o',
     ]
 

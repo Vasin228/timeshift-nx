@@ -969,8 +969,17 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_i
   uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
   const uint32_t self = rex::byte_swap(pcr_addr);
   assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
+  uint32_t spins = 0;
   while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
-    rex::thread::MaybeYield();
+    if (++spins < 16u) {
+      rex::thread::MaybeYield();
+    } else {
+#if defined(__SWITCH__)
+      rex::thread::Sleep(std::chrono::microseconds(50));
+#else
+      rex::thread::MaybeYield();
+#endif
+    }
   }
   return old_irql;
 }

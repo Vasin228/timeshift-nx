@@ -72,9 +72,9 @@ Overall Port Readiness: **`[█████████░] 95%`**
 If anyone decides to pick this up, here is the main remaining area for further improvement:
 
 ### 1. Further Performance Headroom in Heavy Scenes
-* **Symptom:** Heavy outdoor combat scenes with 600–700+ draw calls can still dip below 30 FPS when full shadows are enabled (toggleable via `Hold +` menu).
+* **Symptom:** Heavy outdoor combat scenes with dense explosions (e.g. `ts2_zepride1_part01`) hold `~20–23 FPS`, bottlenecked by the single-threaded simulation/physics thread rather than the GPU (`GPU 14–18 ms`), while `ts2_skyscraper_part4` runs at `29–30 FPS` and full shadows can also be toggled via the `Hold +` menu.
 
-*(Previously listed audio distortion/stuttering, remaining black level geometry/rooftop shaders, texture LOD, glowing/flickering objects, shadow dashes, and `10-15 FPS` bottlenecks were addressed in Parts 270–291 via `4.6 ms` `AudioWorker` pacing + XMA/FMOD Core 1/2 pinning, full `15,961`-shader `.s3dpak`/`.sdrc` extraction + `ShaderCacheEntry` metadata bake, `GetTextureGradients`, conditional EDRAM 4xMSAA aliasing, depth-compression control, `-O3`, 4-core pinning, ZCull, lock-free `DeviceRegistry`, and `renut_skip_orig_d3d`.)*
+*(Previously listed freezes/stutters, audio distortion, remaining black level geometry/rooftop shaders, texture LOD, glowing/flickering objects, shadow dashes, and `10-15 FPS` bottlenecks were addressed in Parts 270–292 via `4.6 ms` `AudioWorker` pacing + XMA/FMOD Core 1/2 pinning, native ARM64 CRT/FMOD DSP/resamplers + NaN-frequency Data Abort fix, zero-offset Switch views + inline PPC helpers, FSR1/resolution scale, Horizon spinlock backoff, full `15,961`-shader extraction + `ShaderCacheEntry` metadata bake, `GetTextureGradients`, conditional EDRAM 4xMSAA aliasing, depth-compression control, `-O3`, 4-core pinning, ZCull, lock-free `DeviceRegistry`, and `renut_skip_orig_d3d`.)*
 
 ---
 
@@ -97,7 +97,7 @@ timeshift-nx/
 |   |-- extract_all_pak_shaders.py # Extracts shaders across all .s3dpak and .sdrc archives
 |   |-- prepare_switch_cache.py    # Prepares shaders and assets
 |   `-- deploy_candidate.py        # Deploys to Switch via FTP
-|-- MODLOG.md             # Development chronicle (Parts 286-291; earlier in archives)
+|-- MODLOG.md             # Development chronicle (Parts 286-292; earlier in archives)
 |-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache
 `-- timeshift.toml        # Game configuration file for Switch
 ```

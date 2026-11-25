@@ -32,6 +32,8 @@
 
 #include <rex/audio/conversion.h>
 #include <rex/audio/downmix.h>
+
+extern "C" void rex_watchdog_note_audout(uint64_t buffers) __attribute__((weak));
 #endif
 
 namespace rex::audio::nop {
@@ -156,8 +158,8 @@ class SwitchAudoutDriver : public AudioDriver {
     playback_running_ = true;
     playback_thread_ = std::thread([this]() {
 #if defined(__SWITCH__)
-      svcSetThreadCoreMask(CUR_THREAD_HANDLE, 1, (1u << 1) | (1u << 2));
-      svcSetThreadPriority(CUR_THREAD_HANDLE, 0x20);
+      svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2);
+      svcSetThreadPriority(CUR_THREAD_HANDLE, 0x21);
 #endif
       PlaybackThreadMain();
     });
@@ -294,6 +296,9 @@ class SwitchAudoutDriver : public AudioDriver {
       }
     }
     ++submitted_buffers_;
+    if (rex_watchdog_note_audout) {
+      rex_watchdog_note_audout(submitted_buffers_);
+    }
     if (submitted_buffers_ == 1 || submitted_buffers_ % 256 == 0) {
       size_t q_size = 0, f_size = 0;
       {

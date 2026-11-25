@@ -6,6 +6,10 @@
 
 #include <switch.h>
 
+#if defined(__SWITCH__)
+extern "C" void rex_watchdog_set_render_stage(uint32_t stage) __attribute__((weak));
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -1211,6 +1215,7 @@ namespace plume {
         // Until it signals, or the queue has failed: memory the submission uses (command memory with its compute
         // launch descriptors, uploads) is reused once this returns, so giving up on a late fence made the GPU run
         // garbage (Ryujinx run 16: shaders decoded from data, then a lost device). Logged at 2, 4, 8, 16 ... s.
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(8u);
         for (int waited = 1;; waited++) {
             const DkResult r = dkFenceWait(&f->fence, 2'000'000'000ll);
             if (r == DkResult_Success)
@@ -1222,6 +1227,7 @@ namespace plume {
             if (failed)
                 break;
         }
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(1u);
         f->pending = false;
     }
 
@@ -1243,7 +1249,9 @@ namespace plume {
     void Deko3DSwapChain::destroy() {
         if (!swapchain)
             return;
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(9u);
         dkQueueWaitIdle(device->queue);
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(1u);
         dkSwapchainDestroy(swapchain);
         swapchain = nullptr;
         textures.clear();
@@ -1314,8 +1322,8 @@ namespace plume {
             logf("dkSwapchainCreate failed");
             return false;
         }
-        dkSwapchainSetSwapInterval(swapchain, vsync ? 1 : 0);
-        logf("swapchain: %u images of %ux%u (format %d), swap interval %u", count, w, h, int(format), vsync ? 1u : 0u);
+        dkSwapchainSetSwapInterval(swapchain, swapInterval);
+        logf("swapchain: %u images of %ux%u (format %d), swap interval %u", count, w, h, int(format), swapInterval);
         return true;
     }
 
@@ -1329,8 +1337,16 @@ namespace plume {
 
     void Deko3DSwapChain::setVsyncEnabled(bool vsyncEnabled) {
         vsync = vsyncEnabled;
+        swapInterval = vsyncEnabled ? 1u : 0u;
         if (swapchain)
-            dkSwapchainSetSwapInterval(swapchain, vsync ? 1 : 0);
+            dkSwapchainSetSwapInterval(swapchain, swapInterval);
+    }
+
+    void Deko3DSwapChain::setSwapInterval(uint32_t interval) {
+        swapInterval = interval;
+        vsync = (interval > 0u);
+        if (swapchain)
+            dkSwapchainSetSwapInterval(swapchain, swapInterval);
     }
 
     RenderTexture *Deko3DSwapChain::getTexture(uint32_t textureIndex) {
@@ -1341,7 +1357,9 @@ namespace plume {
         if (!swapchain)
             return false;
         // A queue operation: the queue waits for the image before the commands submitted after this.
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(3u);
         const int slot = dkQueueAcquireImage(device->queue, swapchain);
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(2u);
         if (slot < 0)
             return false;
         *textureIndex = uint32_t(slot);
@@ -1351,7 +1369,9 @@ namespace plume {
     bool Deko3DSwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **, uint32_t) {
         if (!swapchain)
             return false;
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(4u);
         dkQueuePresentImage(device->queue, swapchain, int(textureIndex));
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(2u);
         return true;
     }
 

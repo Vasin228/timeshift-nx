@@ -64,7 +64,12 @@ inline std::atomic<uint64_t> g_orig_cnt_clr{0};
 inline std::atomic<uint64_t> g_orig_ticks_res{0};
 inline std::atomic<uint64_t> g_orig_cnt_res{0};
 inline std::atomic<uint32_t> g_game_core_mask{0};
+inline std::atomic<uint32_t> g_allowed_core_mask{0};
+// Thread ON-CPU hardware ticks by role: 0=sim(TID04), 1=draw(TID09), 2=wrk(Saber3D), 3=ren(RenderThread), 4=aud(XAudio/FMOD/XMA), 5=strm(Streaming/Other)
+inline std::atomic<uint64_t> g_role_cpu_ticks[6]{};
 inline std::atomic<uint64_t> g_handover_counts[6]{};
+inline thread_local int t_thread_role = 5;
+void AccountThreadCpuTicks(int role);
 inline std::atomic<uint32_t> g_hud_fps_x10{0};
 inline std::atomic<uint32_t> g_hud_min_fps_x10{0};
 inline std::atomic<uint32_t> g_hud_frame_ms_x10{0};

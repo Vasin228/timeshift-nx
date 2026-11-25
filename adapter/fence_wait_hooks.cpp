@@ -10,6 +10,17 @@ REX_EXTERN(__imp__sub_82647528);
 REX_EXTERN(__imp__sub_82653648);
 REX_EXTERN(__imp__sub_8264ED40);
 namespace {
+#if defined(__SWITCH__)
+extern "C" void rex_watchdog_set_draw_stage(uint32_t stage) __attribute__((weak));
+struct WatchdogDrawStageScope {
+  explicit WatchdogDrawStageScope(uint32_t s) {
+    if (rex_watchdog_set_draw_stage) rex_watchdog_set_draw_stage(s);
+  }
+  ~WatchdogDrawStageScope() {
+    if (rex_watchdog_set_draw_stage) rex_watchdog_set_draw_stage(0u);
+  }
+};
+#endif
 struct NativePoll;
 thread_local NativePoll *active_poll=nullptr;
 struct NativePoll{
@@ -58,6 +69,9 @@ REX_EXTERN(sub_82647528){
       if(bytes.size()==4){
         const uint32_t device=uint32_t(bytes[0])<<24|uint32_t(bytes[1])<<16|uint32_t(bytes[2])<<8|bytes[3];
         if(registry.Contains(device)){
+#if defined(__SWITCH__)
+          WatchdogDrawStageScope wd_stage(4u);
+#endif
           auto lease=registry.Acquire(device,true);
           if(!lease)throw std::logic_error("wait poll on an unavailable owned device");
           timeshift::telemetry::FenceWaitScope wait_scope;

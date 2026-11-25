@@ -380,12 +380,16 @@ int Memory::MapViewsSwitch(size_t mapping_size) {
   }
 
   uint8_t* mapping_base = rex::memory::nx::Base();
-  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+  // Horizon svcMapProcessMemory supports 4 KB alignment, allowing native 0x1000 offset for 0xE0000000.
+  constexpr uint64_t kPageMask = ~uint64_t(0xFFFull);
 
   for (size_t n = 0; n < rex::countof(map_info); n++) {
     size_t view_size = static_cast<size_t>(map_info[n].virtual_address_end -
                                            map_info[n].virtual_address_start + 1);
-    size_t file_offset = static_cast<size_t>(map_info[n].target_address & granularity_mask);
+    size_t file_offset = static_cast<size_t>(map_info[n].target_address & kPageMask);
+    if (file_offset < mapping_size && file_offset + view_size > mapping_size) {
+      view_size = mapping_size - file_offset;
+    }
     uint8_t* target_address = mapping_base + map_info[n].virtual_address_start;
     if (!rex::memory::nx::AddView(target_address, file_offset, view_size)) {
       REXSYS_ERROR("MapViewsSwitch: AddView failed view {} addr 0x{:016X} size 0x{:X} offset 0x{:X}",
@@ -1925,11 +1929,15 @@ void PhysicalHeap::Initialize(memory::Memory* memory, uint8_t* membase, HeapType
                               uint32_t heap_base, uint32_t heap_size, uint32_t page_size,
                               VirtualHeap* parent_heap) {
   uint32_t host_address_offset;
+#if REX_PLATFORM_SWITCH
+  host_address_offset = 0;  // MapViewsSwitch maps 0xE0000000 at +0x1000 via 4 KB svcMapProcessMemory
+#else
   if (heap_base >= 0xE0000000 && rex::memory::allocation_granularity() > 0x1000) {
     host_address_offset = 0x1000;
   } else {
     host_address_offset = 0;
   }
+#endif
 
   BaseHeap::Initialize(memory, membase, heap_type, heap_base, heap_size, page_size,
                        host_address_offset);

@@ -50,22 +50,17 @@ namespace rex {
 
 REXCVAR_DEFINE_STRING(gpu_backend, "vulkan", "GPU",
                       "rexgpu-xenos backend: vulkan (Xenos emulation) or native (Part 111)");
+REXCVAR_DEFINE_BOOL(switch_boost_clocks, false, "Switch",
+                    "Override Switch stock clocks to 1785/768/1600 MHz via clkrst (false keeps authentic stock Docked/Handheld clocks)");
 
 namespace {
 
 #if defined(__SWITCH__)
-// Part 109/158: log AND set CPU/GPU/EMC clocks to max safe rates so the frame
-// budget is not wasted on stock throttled clocks.  If sys-clk is already
-// managing frequencies this block is a no-op (we detect its presence and skip
-// the set calls so sys-clk's profile wins).
-//
-// Safe max rates for all retail Switch variants:
-//   CPU 1785 MHz  (Erista+Mariko; Mariko can do 1963 but 1785 is CFW-safe)
-//   GPU  768 MHz  (Erista-safe; Mariko can do 921 but we stay conservative)
-//   EMC 1600 MHz  (Erista bus cap; Mariko selects its own optimum)
-//
-// These are the values used by nfsmw-nx, sa2-nx, and project8-sw.
+// Part 109/158/292: Query Switch CPU/GPU/EMC clocks and operation mode (Docked vs Handheld).
+// Keep stock retail clocks unless switch_boost_clocks=true is explicitly requested.
 static void ApplySwitchPerformanceConfig() {
+  const bool docked = (appletGetOperationMode() == AppletOperationMode_Console);
+  const bool boost = REXCVAR_GET(switch_boost_clocks);
   u32 perf_normal = 0;
   u32 perf_boost = 0;
   if (R_SUCCEEDED(apmInitialize())) {
@@ -75,51 +70,59 @@ static void ApplySwitchPerformanceConfig() {
   }
   u32 cpu_hz = 0;
   u32 gpu_hz = 0;
+  u32 emc_hz = 0;
   bool clocks_read = false;
   bool clocks_set = false;
   struct stat st {};
   const bool sysclk_present = stat("sdmc:/atmosphere/contents/00FF0000636C6BFF", &st) == 0;
 
   if (R_SUCCEEDED(clkrstInitialize())) {
-    // CPU (1785 MHz: safe high-performance clock for Switch)
     ClkrstSession cpu_session{};
     if (R_SUCCEEDED(clkrstOpenSession(&cpu_session, PcvModuleId_CpuBus, 3))) {
       clocks_read = R_SUCCEEDED(clkrstGetClockRate(&cpu_session, &cpu_hz)) || clocks_read;
-      const Result set_rc = clkrstSetClockRate(&cpu_session, 1785000000u);
-      clocks_set = R_SUCCEEDED(set_rc) || clocks_set;
-      clkrstGetClockRate(&cpu_session, &cpu_hz);
+      if (boost) {
+        const Result set_rc = clkrstSetClockRate(&cpu_session, 1785000000u);
+        clocks_set = R_SUCCEEDED(set_rc) || clocks_set;
+        clkrstGetClockRate(&cpu_session, &cpu_hz);
+      }
       clkrstCloseSession(&cpu_session);
     }
-    // GPU (768 MHz: safe high-performance clock for GM20B)
     ClkrstSession gpu_session{};
     if (R_SUCCEEDED(clkrstOpenSession(&gpu_session, PcvModuleId_GPU, 3))) {
       clocks_read = R_SUCCEEDED(clkrstGetClockRate(&gpu_session, &gpu_hz)) || clocks_read;
-      const Result set_rc = clkrstSetClockRate(&gpu_session, 768000000u);
-      clocks_set = R_SUCCEEDED(set_rc) || clocks_set;
-      clkrstGetClockRate(&gpu_session, &gpu_hz);
+      if (boost) {
+        const Result set_rc = clkrstSetClockRate(&gpu_session, 768000000u);
+        clocks_set = R_SUCCEEDED(set_rc) || clocks_set;
+        clkrstGetClockRate(&gpu_session, &gpu_hz);
+      }
       clkrstCloseSession(&gpu_session);
     }
-    // EMC (1600 MHz memory bus: full memory bandwidth)
     ClkrstSession emc_session{};
     if (R_SUCCEEDED(clkrstOpenSession(&emc_session, PcvModuleId_EMC, 3))) {
-      clkrstSetClockRate(&emc_session, 1600000000u);
+      clocks_read = R_SUCCEEDED(clkrstGetClockRate(&emc_session, &emc_hz)) || clocks_read;
+      if (boost) {
+        clkrstSetClockRate(&emc_session, 1600000000u);
+        clkrstGetClockRate(&emc_session, &emc_hz);
+      }
       clkrstCloseSession(&emc_session);
     }
     clkrstExit();
   }
-  if (!clocks_set && R_SUCCEEDED(pcvInitialize())) {
+  if (boost && !clocks_set && R_SUCCEEDED(pcvInitialize())) {
     pcvSetClockRate(PcvModule_CpuBus, 1785000000u);
     pcvSetClockRate(PcvModule_GPU, 768000000u);
     pcvSetClockRate(PcvModule_EMC, 1600000000u);
     pcvGetClockRate(PcvModule_CpuBus, &cpu_hz);
     pcvGetClockRate(PcvModule_GPU, &gpu_hz);
+    pcvGetClockRate(PcvModule_EMC, &emc_hz);
     clocks_set = (cpu_hz > 1020000000u);
     pcvExit();
   }
   REXLOG_INFO(
-      "[perfcfg] apm_config_normal={} apm_config_boost={} cpu_mhz={} gpu_mhz={} "
+      "[perfcfg] mode={} boost={} apm_normal={} apm_boost={} cpu_mhz={} gpu_mhz={} emc_mhz={} "
       "clocks_read={} clocks_set={} sysclk_present={}",
-      perf_normal, perf_boost, cpu_hz / 1000000u, gpu_hz / 1000000u,
+      docked ? "docked" : "handheld", boost, perf_normal, perf_boost,
+      cpu_hz / 1000000u, gpu_hz / 1000000u, emc_hz / 1000000u,
       clocks_read, clocks_set, sysclk_present);
 }
 // Keep the original name used at the one call site below.

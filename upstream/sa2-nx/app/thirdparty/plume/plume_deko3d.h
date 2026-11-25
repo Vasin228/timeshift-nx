@@ -456,6 +456,7 @@ namespace plume {
         std::vector<DkMemBlock> blocks;
         uint32_t width = 0, height = 0;
         bool vsync = true;
+        uint32_t swapInterval = 1;
 
         Deko3DSwapChain(Deko3DCommandQueue *queue, const RenderSwapChainDesc &desc);
         ~Deko3DSwapChain() override;
@@ -464,6 +465,7 @@ namespace plume {
         bool resize() override;
         bool needsResize() const override;
         void setVsyncEnabled(bool vsyncEnabled) override;
+        void setSwapInterval(uint32_t interval) override;
         bool isVsyncEnabled() const override { return vsync; }
         uint32_t getWidth() const override { return width; }
         uint32_t getHeight() const override { return height; }

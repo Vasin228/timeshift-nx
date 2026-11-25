@@ -41,6 +41,7 @@
 #endif
 #if defined(__SWITCH__)
 #include <switch.h>
+extern "C" void rex_watchdog_note_render(uint64_t frames);
 #endif
 
 namespace timeshift::telemetry {
@@ -376,6 +377,12 @@ void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
   }
 #endif
   const uint32_t core_mask = g_game_core_mask.exchange(0, std::memory_order_relaxed);
+  const uint32_t allowed_mask = g_allowed_core_mask.load(std::memory_order_relaxed);
+  double thr_ms[6]{};
+  for (int i = 0; i < 6; ++i) {
+    const uint64_t ticks = g_role_cpu_ticks[i].exchange(0, std::memory_order_relaxed);
+    thr_ms[i] = TicksToMs(ticks) / double(count);
+  }
   uint64_t ho[6]{};
   for (int i = 0; i < 6; ++i) {
     ho[i] = g_handover_counts[i].exchange(0, std::memory_order_relaxed);
@@ -397,6 +404,9 @@ void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
       avg_tiling, double(sum_tiling_cnt) / double(count),
       avg_swap, core_mask, cpu_mhz, gpu_mhz, emc_mhz,
       ho[0], ho[1], ho[2], ho[3], ho[4], ho[5]);
+  REXLOG_INFO(
+      "[perf-thr] 300f cpu_ms/f: sim={:.2f} draw={:.2f} wrk={:.2f} ren={:.2f} aud={:.2f} strm={:.2f} allowed=0x{:X}",
+      thr_ms[0], thr_ms[1], thr_ms[2], thr_ms[3], thr_ms[4], thr_ms[5], allowed_mask);
   REXLOG_INFO(
       "[perf-ren] 300f: dev={:.2f} tex={:.2f} geo={:.2f} const={:.2f} "
       "pipe={:.2f} res={:.2f} pres={:.2f} (sum={:.2f}ms)",
@@ -596,19 +606,19 @@ void StartLongLivedThread(void (*fn)(), size_t stack_bytes) {
 void OnRenderThreadStart() {
 #if defined(__SWITCH__)
   svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2);
-  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x24);
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x23);
 #endif
 }
 void OnPrebuildWorkerStart() {
 #if defined(__SWITCH__)
-  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 3, 1u << 3);
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2);
   svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2E);
 #endif
 }
 void OnBackgroundThreadStart(const char *what) {
   (void)what;
 #if defined(__SWITCH__)
-  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 3, 1u << 3);
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2);
   svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2E);
 #endif
 }
@@ -625,12 +635,13 @@ void CountKick() {}
 void CountDrawKind(bool depth_only, bool depth_only_plain, bool writes_nothing, bool partial_mask) {
   (void)depth_only; (void)depth_only_plain; (void)writes_nothing; (void)partial_mask;
 }
-uint64_t TextureReserveBytes() { return 256ull << 20; }
-uint64_t StreamCacheMaxBytes(uint64_t renut_max) { return renut_max; }
-uint64_t StreamCacheIdleFrames(uint64_t renut_frames) { return renut_frames; }
+uint64_t TextureReserveBytes() { return 192ull << 20; }
+uint64_t StreamCacheMaxBytes(uint64_t renut_max) { (void)renut_max; return 64ull << 20; }
+uint64_t StreamCacheIdleFrames(uint64_t renut_frames) { (void)renut_frames; return 600u; }
 uint32_t UploadTrimResets(uint32_t renut_resets, uint32_t frames_in_flight) {
+  (void)renut_resets;
   (void)frames_in_flight;
-  return renut_resets;
+  return 120u;
 }
 void CountReserveEviction(uint64_t textures) { (void)textures; }
 void ControlNvkLocked() {}
@@ -647,8 +658,8 @@ bool Deko3DZcullOn() {
 }
 bool Deko3DBarrierMergeOn() { return true; }
 bool Deko3DBarrierLeanOn() { return true; }
-bool Deko3DVsOutputsOn() { return true; }
-bool Deko3DUamPrmtOn() { return false; }
+bool Deko3DVsOutputsOn() { return false; }
+bool Deko3DUamPrmtOn() { return true; }
 bool EarlyHoistOn() { return true; }
 uint32_t TxqMode() { return 1; }
 bool StallPresentOn() { return false; }
@@ -666,8 +677,8 @@ bool LatencyTrimOn() { return false; }
 uint32_t FurShellEvery() { return 1; }
 uint32_t PortraitFurShellEvery() { return 1; }
 void CountFurShell(bool drawn) { (void)drawn; }
-unsigned Deko3DUamFlags() { return 0; }
-int Deko3DCompileCore() { return 3; }
+unsigned Deko3DUamFlags() { return 1471u; }
+int Deko3DCompileCore() { return 2; }
 int Deko3DCompilePriority() { return 0x2C; }
 void CountKickSubmit(int kicks) {
   // Only kicks == 0 represents an actual GPU command list submit; 1 and 2 track RingCleaner flushes.
@@ -848,20 +859,40 @@ void UpdateLiveFpsStats(double frame_ms, double ren_ms, double gpu_ms, uint32_t 
     const double avg_ren = sec_ren_ms / double(sec_frames);
     const double avg_draws = double(sec_draws) / double(sec_frames);
 
+    static std::string s_fps_csv_buf = [] {
+      std::string s;
+      s.reserve(2048);
+      return s;
+    }();
+    static uint32_t s_fps_csv_pending = 0;
+    static bool s_fps_file_opened = false;
+    if (!header_written) {
+      s_fps_csv_buf += "time_s,frames,fps,min_fps,max_fps,avg_ms,p95_ms,max_ms,gpu_ms,ren_ms,draws\n";
+      header_written = true;
+    }
+    char row[192];
+    const int row_len = std::snprintf(
+        row, sizeof(row), "%.2f,%u,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f\n",
+        session_time_s, sec_frames, fps, min_fps, max_fps,
+        avg_ms, p95_ms, sec_max_ms, avg_gpu, avg_ren, avg_draws);
+    if (row_len > 0) {
+      const size_t n = std::min<size_t>(static_cast<size_t>(row_len), sizeof(row) - 1);
+      s_fps_csv_buf.append(row, n);
+      ++s_fps_csv_pending;
+    }
+    if (s_fps_csv_pending >= 10u) {
 #if defined(__SWITCH__)
-    const char* fps_path = "sdmc:/switch/timeshift/fps_log.csv";
+      const char* fps_path = "sdmc:/switch/timeshift/fps_log.csv";
 #else
-    const char* fps_path = "fps_log.csv";
+      const char* fps_path = "fps_log.csv";
 #endif
-    if (FILE* f = std::fopen(fps_path, header_written ? "a" : "w")) {
-      if (!header_written) {
-        std::fprintf(f, "time_s,frames,fps,min_fps,max_fps,avg_ms,p95_ms,max_ms,gpu_ms,ren_ms,draws\n");
-        header_written = true;
+      if (FILE* f = std::fopen(fps_path, s_fps_file_opened ? "a" : "w")) {
+        std::fwrite(s_fps_csv_buf.data(), 1, s_fps_csv_buf.size(), f);
+        std::fclose(f);
+        s_fps_file_opened = true;
       }
-      std::fprintf(f, "%.2f,%u,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f\n",
-                   session_time_s, sec_frames, fps, min_fps, max_fps,
-                   avg_ms, p95_ms, sec_max_ms, avg_gpu, avg_ren, avg_draws);
-      std::fclose(f);
+      s_fps_csv_buf.clear();
+      s_fps_csv_pending = 0;
     }
 
     REXLOG_INFO(
@@ -905,7 +936,27 @@ void OnRenderThreadFrame(double busy_ms) {
   s_prev_tp = now;
   s_has_prev = true;
 
+#if defined(__SWITCH__)
+  {
+    static uint64_t s_prev_ren_cpu_ticks = 0;
+    u64 now_cpu = 0;
+    Result rc = svcGetInfo(&now_cpu, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total);
+    if (R_FAILED(rc)) {
+      rc = svcGetInfo(&now_cpu, InfoType_ThreadTickCountDeprecated, CUR_THREAD_HANDLE, TickCountInfo_Total);
+    }
+    if (R_SUCCEEDED(rc)) {
+      if (s_prev_ren_cpu_ticks != 0u && now_cpu > s_prev_ren_cpu_ticks) {
+        timeshift::telemetry::g_role_cpu_ticks[3].fetch_add(now_cpu - s_prev_ren_cpu_ticks,
+                                                            std::memory_order_relaxed);
+      }
+      s_prev_ren_cpu_ticks = now_cpu;
+    }
+  }
+#endif
   const uint32_t frame_idx = s_total_frames++;
+#if defined(__SWITCH__)
+  rex_watchdog_note_render(uint64_t(frame_idx) + 1u);
+#endif
   if (frame_idx < timeshift::telemetry::kWarmupFrames) {
     const double cur_gpu_ms =
         double(timeshift::telemetry::g_frame_gpu_us.load(std::memory_order_relaxed)) / 1000.0;
@@ -915,6 +966,9 @@ void OnRenderThreadFrame(double busy_ms) {
     timeshift::telemetry::ResetPerFrameCounters();
     if (frame_idx + 1 == timeshift::telemetry::kWarmupFrames) {
       timeshift::telemetry::g_game_core_mask.store(0, std::memory_order_relaxed);
+      for (auto& c : timeshift::telemetry::g_role_cpu_ticks) {
+        c.store(0, std::memory_order_relaxed);
+      }
       for (auto& c : timeshift::telemetry::g_handover_counts) {
         c.store(0, std::memory_order_relaxed);
       }
@@ -1052,11 +1106,14 @@ REXCVAR_DEFINE_INT32(renut_far_plane_m, 0, "Renut",
 REXCVAR_DEFINE_STRING(renut_force_level, "", "Renut",
                       "Override level name for automated shader harvesting");
 REXCVAR_DECLARE(bool, renut_fps_overlay);
-REXCVAR_DECLARE(bool, renut_vsync);
+REXCVAR_DECLARE(std::string, renut_fps_cap);
+REXCVAR_DECLARE(std::string, renut_resolution);
+REXCVAR_DECLARE(bool, renut_fxaa);
 REXCVAR_DECLARE(std::string, renut_anisotropic_filtering);
 REXCVAR_DECLARE(bool, renut_skip_orig_d3d);
 REXCVAR_DECLARE(bool, renut_deko3d_zcull);
 REXCVAR_DECLARE(bool, renut_deko3d_depth_compression);
+REXCVAR_DECLARE(bool, renut_audio_reverb);
 
 extern "C" {
 void __real_sub_821EFB10(PPCContext& ctx, uint8_t* base);
@@ -1148,6 +1205,12 @@ void __wrap_sub_82281840(PPCContext& ctx, uint8_t* base) {
 void __real___imp__XamInputGetState(PPCContext& ctx, uint8_t* base);
 
 void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
+#if defined(__SWITCH__)
+  static thread_local uint32_t s_sim_input_probe = 0;
+  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_input_probe & 3u) == 0u) {
+    timeshift::telemetry::AccountThreadCpuTicks(0);
+  }
+#endif
   const uint32_t user_index = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
   const uint32_t state_va = ctx.r5.u32;
@@ -1216,10 +1279,10 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
 
     int cur = timeshift::telemetry::g_menu_cursor.load(std::memory_order_relaxed);
     if (step_dir(kBtnUp)) {
-      cur = (cur + 9) % 10;
+      cur = (cur + 12) % 13;
       timeshift::telemetry::g_menu_cursor.store(cur, std::memory_order_relaxed);
     } else if (step_dir(kBtnDown)) {
-      cur = (cur + 1) % 10;
+      cur = (cur + 1) % 13;
       timeshift::telemetry::g_menu_cursor.store(cur, std::memory_order_relaxed);
     }
 
@@ -1233,8 +1296,31 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
       const int dir = (delta != 0) ? delta : 1;
       switch (cur) {
         case 0: REXCVAR_SET(renut_fps_overlay, !REXCVAR_GET(renut_fps_overlay)); break;
-        case 1: REXCVAR_SET(renut_skip_shadows, !REXCVAR_GET(renut_skip_shadows)); break;
+        case 1: {
+          static constexpr const char* kFpsCaps[] = {"30", "60", "Off"};
+          const std::string cur_cap = REXCVAR_GET(renut_fps_cap);
+          int idx = 0;
+          for (int i = 0; i < 3; ++i) {
+            if (cur_cap == kFpsCaps[i]) { idx = i; break; }
+          }
+          idx = (idx + dir + 3) % 3;
+          REXCVAR_SET(renut_fps_cap, std::string(kFpsCaps[idx]));
+          break;
+        }
         case 2: {
+          static constexpr const char* kResModes[] = {"Auto", "720p", "480p"};
+          const std::string cur_res = REXCVAR_GET(renut_resolution);
+          int idx = 0;
+          for (int i = 0; i < 3; ++i) {
+            if (cur_res == kResModes[i]) { idx = i; break; }
+          }
+          idx = (idx + dir + 3) % 3;
+          REXCVAR_SET(renut_resolution, std::string(kResModes[idx]));
+          break;
+        }
+        case 3: REXCVAR_SET(renut_fxaa, !REXCVAR_GET(renut_fxaa)); break;
+        case 4: REXCVAR_SET(renut_skip_shadows, !REXCVAR_GET(renut_skip_shadows)); break;
+        case 5: {
           static constexpr int32_t kFarModes[] = {0, 200, 120, 80, 55, 40};
           const int32_t cur_m = REXCVAR_GET(renut_far_plane_m);
           int idx = 0;
@@ -1245,8 +1331,7 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           REXCVAR_SET(renut_far_plane_m, kFarModes[idx]);
           break;
         }
-        case 3: REXCVAR_SET(renut_vsync, !REXCVAR_GET(renut_vsync)); break;
-        case 4: {
+        case 6: {
           static constexpr const char* kAfModes[] = {"Game", "2x", "4x", "8x"};
           const std::string cur_af = REXCVAR_GET(renut_anisotropic_filtering);
           int idx = 1;
@@ -1257,10 +1342,11 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           REXCVAR_SET(renut_anisotropic_filtering, std::string(kAfModes[idx]));
           break;
         }
-        case 5: REXCVAR_SET(renut_skip_orig_d3d, !REXCVAR_GET(renut_skip_orig_d3d)); break;
-        case 6: REXCVAR_SET(renut_deko3d_zcull, !REXCVAR_GET(renut_deko3d_zcull)); break;
-        case 7: REXCVAR_SET(renut_deko3d_depth_compression, !REXCVAR_GET(renut_deko3d_depth_compression)); break;
-        case 8: {
+        case 7: REXCVAR_SET(renut_skip_orig_d3d, !REXCVAR_GET(renut_skip_orig_d3d)); break;
+        case 8: REXCVAR_SET(renut_deko3d_zcull, !REXCVAR_GET(renut_deko3d_zcull)); break;
+        case 9: REXCVAR_SET(renut_deko3d_depth_compression, !REXCVAR_GET(renut_deko3d_depth_compression)); break;
+        case 10: REXCVAR_SET(renut_audio_reverb, !REXCVAR_GET(renut_audio_reverb)); break;
+        case 11: {
           const std::string cur_lvl = REXCVAR_GET(renut_force_level);
           int idx = 0;
           for (int i = 0; i < timeshift::telemetry::kCampaignLevelCount; ++i) {
@@ -1272,7 +1358,7 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
                       std::string(timeshift::telemetry::kCampaignLevels[idx].pak));
           break;
         }
-        case 9:
+        case 12:
 #if defined(__SWITCH__)
           rex::cvar::SaveConfig("sdmc:/switch/timeshift/timeshift.toml");
 #else

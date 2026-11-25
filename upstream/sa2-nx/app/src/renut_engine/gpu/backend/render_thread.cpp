@@ -25,6 +25,10 @@
 #include "renut_engine/gpu/banjo_renut_tuning.h"
 
 #include <rex/cvar.h>
+#if defined(__SWITCH__)
+#include <switch.h>
+extern "C" void rex_watchdog_set_render_stage(uint32_t stage) __attribute__((weak));
+#endif
 
 // sa2-nx (2026-10-20): see g_done_waiters and Run.
 REXCVAR_DEFINE_BOOL(sa2_renut_done_notify_waiters, true, "SA2/Renderer",
@@ -212,6 +216,9 @@ void RunRing() {
   uint64_t pos = g_dequeue.load(std::memory_order_relaxed);
   for (;;) {
     if (!RingReady(pos)) {
+#if defined(__SWITCH__)
+      if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(0u);
+#endif
       g_waiting.store(true, std::memory_order_seq_cst);
       bool stopping = false;
       if (!RingReadySc(pos)) {
@@ -245,6 +252,9 @@ void RunRing() {
         PrefetchItem(g_ring[(pos + 1) & (kRingSlots - 1)].item);
       if (!batch_clock)
         g_item_start = item_start;
+#if defined(__SWITCH__)
+      if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(1u);
+#endif
       Execute(slot.item);
       slot.item.work = nullptr;  // the closure's captures go now, as the batch's cleared vector freed them
       slot.seq.store(pos + kRingSlots, std::memory_order_release);
@@ -427,7 +437,11 @@ bool PushRing(Item &&item, bool draw) {
         }
         g_work_cv.notify_one();
       }
+#if defined(__SWITCH__)
+      svcSleepThread(50000ULL);
+#else
       std::this_thread::yield();
+#endif
       pos = g_enqueue.load(std::memory_order_relaxed);
     } else {
       pos = g_enqueue.load(std::memory_order_relaxed);

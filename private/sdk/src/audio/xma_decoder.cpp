@@ -163,8 +163,8 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
 
 void XmaDecoder::WorkerThreadMain() {
 #if defined(__SWITCH__)
-  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, (1u << 2) | (1u << 1)); // Prefer Core 2 (Render has headroom), allow Core 1; stay off Core 0 (Main)
-  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x26);                     // Below Main/Render (0x24) to protect FPS, above 0x28 Saber3D workers
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, (1u << 2) | (1u << 1)); // Prefer Core 2, spill to Core 1 when Core 2 is busy
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x25);                      // Below Render (0x23) and Sim (0x24)
 #endif
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!

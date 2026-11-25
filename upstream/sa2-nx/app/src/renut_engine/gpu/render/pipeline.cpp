@@ -638,7 +638,7 @@ struct PipelineList {
     std::fflush(out);
 #if defined(_WIN32)
     _commit(_fileno(out));
-#else
+#elif !defined(__SWITCH__)
     fsync(fileno(out));
 #endif
     unsynced = false;

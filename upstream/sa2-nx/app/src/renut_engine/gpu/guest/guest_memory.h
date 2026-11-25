@@ -44,10 +44,9 @@ template <typename T>
 inline T *GuestPtr(u32 guest_address) {
   if (!guest_address)
     return nullptr;
-#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__)) || \
-    (defined(TIMESHIFT_RECOMP) && REX_PLATFORM_SWITCH)
-  // The frozen TimeShift Switch SDK has a 4 KiB host offset for the
-  // 0xE0000000 physical alias. Use its translator, not a flat VA sum.
+#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
+  // Windows and macOS ARM64 have a 4 KiB host offset for the 0xE0000000
+  // physical alias. Use the full translator, not a flat VA sum.
   return REX_KERNEL_MEMORY()->TranslateVirtual<T *>(guest_address);  // heaps with host offsets there
 #else
   return reinterpret_cast<T *>(detail::GuestVirtualBase() + guest_address);  // TranslateVirtual's sum (no offsets)

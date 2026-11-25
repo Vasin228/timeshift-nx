@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 #include <fmt/format.h>
@@ -978,6 +979,22 @@ void KernelState::WaitForThreadsToExit(const std::vector<object_ref<XThread>>& t
   }
 }
 
+namespace {
+constexpr int kMaxWatchdogThreads = 64;
+rex::system::XThread* g_wd_threads[kMaxWatchdogThreads]{};
+int g_wd_thread_count = 0;
+
+void SyncWatchdogThreadsLocked(const std::unordered_map<uint32_t, rex::system::XThread*>& map) {
+  int n = 0;
+  for (const auto& pair : map) {
+    if (pair.second && n < kMaxWatchdogThreads) {
+      g_wd_threads[n++] = pair.second;
+    }
+  }
+  g_wd_thread_count = n;
+}
+}  // namespace
+
 void KernelState::TerminateTitle() {
   REXSYS_DEBUG("KernelState::TerminateTitle");
 
@@ -1021,6 +1038,7 @@ void KernelState::TerminateTitle() {
         ++it;
       }
     }
+    SyncWatchdogThreadsLocked(threads_by_id_);
   }
 
   // Drop refs before the self-terminate below (which does not return) so they
@@ -1033,6 +1051,7 @@ void KernelState::TerminateTitle() {
     {
       auto global_lock = global_critical_region_.Acquire();
       threads_by_id_.erase(XThread::GetCurrentThread()->thread_id());
+      SyncWatchdogThreadsLocked(threads_by_id_);
     }
     XThread::GetCurrentThread()->Terminate(0);
   }
@@ -1041,6 +1060,7 @@ void KernelState::TerminateTitle() {
 void KernelState::RegisterThread(XThread* thread) {
   auto global_lock = global_critical_region_.Acquire();
   threads_by_id_[thread->thread_id()] = thread;
+  SyncWatchdogThreadsLocked(threads_by_id_);
 
   // Thread count is now managed via thread-process linking in
   // XThread::InitializeGuestObject and XThread::Exit.
@@ -1051,6 +1071,7 @@ void KernelState::UnregisterThread(XThread* thread) {
   auto it = threads_by_id_.find(thread->thread_id());
   if (it != threads_by_id_.end()) {
     threads_by_id_.erase(it);
+    SyncWatchdogThreadsLocked(threads_by_id_);
   }
 }
 
@@ -1101,6 +1122,51 @@ void KernelState::DumpThreads() {
                   pair.first, start, lr, t->name(), t->is_guest_thread(), t->is_running());
     }
   }
+}
+
+extern "C" {
+struct RexWatchdogThreadSnap {
+  uint32_t tid;
+  uint32_t start;
+  uint32_t lr;
+  uint32_t ctr;
+  uint32_t r1;
+  uint32_t r3;
+  uint8_t is_guest;
+  uint8_t is_running;
+  uint16_t pad;
+};
+
+int rex_kernel_snapshot_threads_trylock(RexWatchdogThreadSnap* out, int max_count) {
+  if (!out || max_count <= 0) {
+    return 0;
+  }
+  std::unique_lock<std::recursive_mutex> lock(rex::thread::global_critical_region::mutex(),
+                                              std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return -1;
+  }
+  const int limit = g_wd_thread_count < max_count ? g_wd_thread_count : max_count;
+  for (int i = 0; i < limit; ++i) {
+    rex::system::XThread* t = g_wd_threads[i];
+    RexWatchdogThreadSnap s{};
+    if (t) {
+      s.tid = t->thread_id();
+      s.start = t->creation_params() ? t->creation_params()->start_address : 0u;
+      s.is_guest = t->is_guest_thread() ? 1u : 0u;
+      s.is_running = t->is_running() ? 1u : 0u;
+      if (t->thread_state() && t->thread_state()->context()) {
+        const auto* ctx = t->thread_state()->context();
+        s.lr = static_cast<uint32_t>(ctx->lr);
+        s.ctr = ctx->ctr.u32;
+        s.r1 = ctx->r1.u32;
+        s.r3 = ctx->r3.u32;
+      }
+    }
+    out[i] = s;
+  }
+  return limit;
+}
 }
 
 void KernelState::RegisterNotifyListener(XNotifyListener* listener) {

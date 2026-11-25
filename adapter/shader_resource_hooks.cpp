@@ -22,7 +22,7 @@ uint32_t Word(uint8_t *base, uint32_t address) {
     return 0;
   }
   size_t at = address;
-#if REX_PLATFORM_SWITCH || REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
+#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
   if (address >= 0xE0000000u) at += 0x1000;
 #endif
   return uint32_t(base[at]) << 24 | uint32_t(base[at + 1]) << 16 |

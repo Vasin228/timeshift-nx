@@ -97,29 +97,30 @@ uint8_t* MakeCodeAlias(void* backing, size_t size) {
 bool MapIntoView(size_t view_index, size_t granule, Chunk& chunk) {
   View& v = g_views[view_index];
   const size_t granule_start = granule * kGranule;
-  if (granule_start < v.offset) {
+  const size_t granule_end = granule_start + kGranule;
+  const size_t view_end = v.offset + v.length;
+  const size_t ov_start = granule_start > v.offset ? granule_start : v.offset;
+  const size_t ov_end = granule_end < view_end ? granule_end : view_end;
+  if (ov_start >= ov_end) {
     return false;  // view does not cover this granule
   }
-  const size_t into_view = granule_start - v.offset;
-  if (into_view >= v.length) {
-    return false;
-  }
-  const size_t remaining = v.length - into_view;
-  size_t length = remaining < kGranule ? remaining : kGranule;
-  length &= ~(kPage - 1);  // mapping must be page multiples
+  const size_t src_off = ov_start - granule_start;
+  const size_t dst_off = ov_start - v.offset;
+  const size_t length = (ov_end - ov_start) & ~(kPage - 1);
   if (length == 0) {
     return false;
   }
   if (v.mapped.size() > granule && v.mapped[granule]) {
     return true;  // already mapped
   }
-  void* dst = v.base + into_view;
+  void* dst = v.base + dst_off;
+  uint8_t* src = chunk.alias + src_off;
 
   const Result rc = svcMapProcessMemory(dst, GetProcHandle(),
-                                       reinterpret_cast<u64>(chunk.alias), length);
+                                       reinterpret_cast<u64>(src), length);
   if (R_FAILED(rc)) {
     REXLOG_ERROR("MapIntoView failed: view={} dst={:p} alias={:p} len=0x{:X} rc=0x{:X}",
-                 view_index, static_cast<void*>(dst), static_cast<void*>(chunk.alias), length, rc);
+                 view_index, static_cast<void*>(dst), static_cast<void*>(src), length, rc);
     return false;
   }
   if (v.mapped.size() <= granule) {
@@ -134,13 +135,19 @@ void UnmapFromView(size_t view_index, size_t granule, Chunk& chunk) {
   if (v.mapped.size() <= granule || !v.mapped[granule]) {
     return;
   }
-  const size_t into_view = granule * kGranule - v.offset;
-  const size_t remaining = v.length - into_view;
-  size_t length = remaining < kGranule ? remaining : kGranule;
-  length &= ~(kPage - 1);
-  if (length) {
-    svcUnmapProcessMemory(v.base + into_view, GetProcHandle(),
-                          reinterpret_cast<u64>(chunk.alias), length);
+  const size_t granule_start = granule * kGranule;
+  const size_t granule_end = granule_start + kGranule;
+  const size_t view_end = v.offset + v.length;
+  const size_t ov_start = granule_start > v.offset ? granule_start : v.offset;
+  const size_t ov_end = granule_end < view_end ? granule_end : view_end;
+  if (ov_start < ov_end) {
+    const size_t src_off = ov_start - granule_start;
+    const size_t dst_off = ov_start - v.offset;
+    const size_t length = (ov_end - ov_start) & ~(kPage - 1);
+    if (length) {
+      svcUnmapProcessMemory(v.base + dst_off, GetProcHandle(),
+                            reinterpret_cast<u64>(chunk.alias + src_off), length);
+    }
   }
   v.mapped[granule] = false;
 }

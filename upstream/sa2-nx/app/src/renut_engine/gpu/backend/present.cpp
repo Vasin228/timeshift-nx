@@ -70,13 +70,31 @@ REXCVAR_DEFINE_BOOL(renut_vsync, true, "Nuts&Bolts/Graphics",
                     "the refresh rate (frame_cap then only limits below it). Off shows frames at "
                     "once, with tearing.");
 
+#if defined(TIMESHIFT_RECOMP)
+REXCVAR_DEFINE_BOOL(renut_fxaa, true, "Nuts&Bolts/Graphics",
+                    "Apply single-pass FXAA 3.11 edge smoothing at scan-out.");
+REXCVAR_DEFINE_STRING(renut_fps_cap, "30", "Nuts&Bolts/Graphics",
+                      "Hardware display sync / FPS cap: 30, 60, or Off.")
+    .allowed({"30", "60", "Off"});
+#endif
+
 namespace renut::gpu {
 
 namespace {
 
-// renut_vsync onto the swapchain (both backends start with it on). Vulkan
+// renut_fps_cap / renut_vsync onto the swapchain. Vulkan
 // makes the change by recreating the swapchain, which needsResize asks for.
 void ApplyVsync(VideoState &s) {
+#if defined(TIMESHIFT_RECOMP)
+  static uint32_t applied = UINT32_MAX;
+  const std::string cap = REXCVAR_GET(renut_fps_cap);
+  const uint32_t interval = (cap == "30") ? 2u : (cap == "60") ? 1u : 0u;
+  if (interval == applied)
+    return;
+  s.swap_chain->setSwapInterval(interval);
+  applied = interval;
+  RGPU_INFO("FPS lock: {} (swap interval {})", cap, interval);
+#else
   static bool applied = true;
   const bool vsync = REXCVAR_GET(renut_vsync);
   if (vsync == applied)
@@ -84,6 +102,7 @@ void ApplyVsync(VideoState &s) {
   s.swap_chain->setVsyncEnabled(vsync);
   applied = vsync;
   RGPU_INFO("Vsync {}", vsync ? "on" : "off");
+#endif
 }
 
 void RebuildSwapChain(VideoState &s) {
@@ -247,7 +266,13 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   push.translate[1] = frame_v * (1.0f - fit.visible[1]) * 0.5f;
   push.texture_index = image.descriptor;
   push.sampler_index = kLinearClampSamplerSlot;
-  push.param0 = image.gamma > 0.0f ? image.gamma : s.output_gamma;
+  const float gamma = image.gamma > 0.0f ? image.gamma : s.output_gamma;
+#if defined(TIMESHIFT_RECOMP)
+  const bool use_fxaa = image.gamma <= 0.0f && REXCVAR_GET(renut_fxaa);
+  push.param0 = use_fxaa ? -gamma : gamma;
+#else
+  push.param0 = gamma;
+#endif
   // sa2-nx: the game's gamma ramp (not on banjo_renut_diag_show_texture's texture): its slot as param1's bits, 0 =
   // none (slots 0-2 are the null textures, never the ramp's).
   const uint32_t ramp_slot = image.gamma <= 0.0f && g_gamma.uploaded && g_gamma.slot != kInvalidDescriptor &&

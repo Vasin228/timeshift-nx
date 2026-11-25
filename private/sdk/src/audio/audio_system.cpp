@@ -102,8 +102,8 @@ X_STATUS AudioSystem::Setup(system::KernelState* kernel_state) {
 
 void AudioSystem::WorkerThreadMain() {
 #if defined(__SWITCH__)
-  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 1, 1u << 1); // Pin to Core 1
-  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x20);       // Real-time priority above XMA worker
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2); // Pin to Core 2 (keep Core 1 clean for simulation TID 04)
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x21);       // Real-time audio feed priority above Render (0x23) and XMA (0x25)
 #endif
   // Initialize driver and ringbuffer.
   Initialize();
@@ -117,7 +117,7 @@ void AudioSystem::WorkerThreadMain() {
     // These handles signify the number of submitted samples. Once we reach
     // 64 samples, we wait until our audio backend releases a semaphore
     // (signaling a sample has finished playing)
-    auto result = rex::thread::WaitAny(wait_handles_, rex::countof(wait_handles_), true,
+    auto result = rex::thread::WaitAny(wait_handles_, rex::countof(wait_handles_), false,
                                        std::chrono::milliseconds(500));
     if (result.first == rex::thread::WaitResult::kFailed) {
       REXAPU_WARN("AudioWorker: WaitAny failed");

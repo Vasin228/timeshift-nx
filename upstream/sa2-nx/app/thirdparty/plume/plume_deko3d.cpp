@@ -20,6 +20,10 @@
 
 #include <uam_api.h>
 
+#if defined(__SWITCH__)
+extern "C" void rex_watchdog_set_render_stage(uint32_t stage) __attribute__((weak));
+#endif
+
 namespace plume {
     // ---- helpers
 
@@ -1347,8 +1351,14 @@ namespace plume {
             }
         }
         compileWake.notify_one();
+#if defined(__SWITCH__)
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(7u);
+#endif
         std::unique_lock<std::mutex> lock(compileMutex);
         compileDone.wait(lock, [&] { return job.done; });
+#if defined(__SWITCH__)
+        if (rex_watchdog_set_render_stage) rex_watchdog_set_render_stage(1u);
+#endif
         if (lend) {
             compileWaiters.erase(std::find(compileWaiters.begin(), compileWaiters.end(), waiterPriority));
             applyCompilePriority();

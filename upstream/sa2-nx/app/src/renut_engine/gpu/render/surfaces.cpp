@@ -22,6 +22,8 @@
 #include "renut_engine/gpu/backend/video.h"
 #if !defined(TIMESHIFT_RECOMP)
 #include "me/sa2_render_mode.h"
+#elif defined(__SWITCH__)
+#include <switch.h>
 #endif  // sa2-nx (1.0.3.1): the console's mode and the heights set for it
 #if defined(PLUME_DEKO3D)
 #include <plume_deko3d.h>                             // sa2-nx (1.0.3.1): Deko3DSetSwapChainSize
@@ -38,10 +40,17 @@ REXCVAR_DEFINE_BOOL(sa2_renut_dock_resolution, true, "SA2/Renderer",
                     "frame (the PC: sa2_render_docked, F9). Heights of 480, 720, 1080, 1440 or 2160. Off: "
                     "renut_resolution");
 
+#if defined(TIMESHIFT_RECOMP)
+REXCVAR_DEFINE_STRING(renut_resolution, "Auto", "Nuts&Bolts/Graphics",
+                      "Internal render resolution: Auto (720p docked, 480p handheld), 480p, 720p, "
+                      "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
+    .allowed({"Auto", "480p", "720p", "1080p", "1440p", "4K"});
+#else
 REXCVAR_DEFINE_STRING(renut_resolution, "720p", "Nuts&Bolts/Graphics",
                       "Internal render resolution, by its height: 480p, 720p (the game's own), "
                       "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
     .allowed({"480p", "720p", "1080p", "1440p", "4K"});
+#endif
 // sa2-nx (2026-10-20, the user's request: MSAA for the final build, 2x): SA2 makes every render target single-sample,
 // so Renut's multisampling (N&B's targets are multisampled: banjo-nx's resolves, depth resolves and readbacks of them)
 // never ran. The game's single-sample targets get this many samples on the host, as the native renderer's sa2_msaa did;
@@ -285,12 +294,21 @@ void LatchResolutionScaleLocked() {
   LatchGraphicsOptionsLocked();
 #if defined(TIMESHIFT_RECOMP)
   const std::string resolution = REXCVAR_GET(renut_resolution);
-  RenderScale scale{resolution == "480p"    ? 1u
-                    : resolution == "1080p" ? 2u
-                    : resolution == "1440p" ? 3u
-                    : resolution == "4K"    ? 4u
-                                            : 0u};
-  constexpr bool follow_mode = false, docked = false;
+  bool docked = true;
+#if defined(__SWITCH__)
+  docked = (appletGetOperationMode() == AppletOperationMode_Console);
+#endif
+  RenderScale scale{};
+  if (resolution == "Auto" || resolution.empty()) {
+    scale.code = docked ? 0u : 1u;
+  } else {
+    scale.code = resolution == "480p"    ? 1u
+               : resolution == "1080p" ? 2u
+               : resolution == "1440p" ? 3u
+               : resolution == "4K"    ? 4u
+                                       : 0u;
+  }
+  constexpr bool follow_mode = false;
 #else
   const std::string resolution = REXCVAR_GET(renut_resolution);
   // Codes of RenderScale.

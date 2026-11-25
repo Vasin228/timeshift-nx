@@ -429,9 +429,11 @@ class PosixConditionBase {
       if (timeout == std::chrono::milliseconds::max()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } else {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
-        std::this_thread::sleep_for(sleep_time);
+        auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(end_time - now);
+        auto sleep_time = std::min(remaining, std::chrono::microseconds(1000));
+        if (sleep_time > std::chrono::microseconds::zero()) {
+          std::this_thread::sleep_for(sleep_time);
+        }
       }
     }
   }
@@ -1107,7 +1109,7 @@ bool DispatchCurrentThreadUserCallback() {
 
 namespace {
 
-constexpr auto kAlertablePollSlice = std::chrono::milliseconds(1);
+constexpr auto kAlertablePollSlice = std::chrono::milliseconds(2);
 
 class ScopedAlertableState {
  public:
@@ -1143,12 +1145,14 @@ std::chrono::milliseconds ComputeAlertableWaitTimeout(
   if (deadline == std::chrono::steady_clock::time_point::max()) {
     return kAlertablePollSlice;
   }
-  auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+  auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
       deadline - std::chrono::steady_clock::now());
-  if (remaining <= std::chrono::milliseconds::zero()) {
+  if (remaining_us <= std::chrono::microseconds::zero()) {
     return std::chrono::milliseconds::zero();
   }
-  return std::min(remaining, kAlertablePollSlice);
+  auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      remaining_us + std::chrono::microseconds(999));
+  return std::min(remaining_ms, kAlertablePollSlice);
 }
 
 }  // namespace

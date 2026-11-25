@@ -4,8 +4,10 @@
 #include "device_registry.h"
 #include "render_drop_telemetry.h"
 #include "perf_breakdown.h"
+#include "renut_engine/gpu/sa2_setter_marks.h"
 #include <rex/cvar.h>
 #include <rex/ppc.h>
+#include <array>
 #include <cstdio>
 #include <exception>
 
@@ -44,7 +46,7 @@ struct UpScope {
 
 uint32_t Word(uint8_t *base, uint32_t address) {
   size_t at = address;
-#if REX_PLATFORM_SWITCH || REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
+#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
   // Match the frozen generated PCH's REX_PHYS_HOST_OFFSET for out pointers.
   if (address >= 0xE0000000u) at += 0x1000;
 #endif
@@ -58,7 +60,7 @@ void PutWord(uint8_t *base, uint32_t address, uint32_t value) {
     return;
   }
   size_t at = address;
-#if REX_PLATFORM_SWITCH || REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
+#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
   if (address >= 0xE0000000u) at += 0x1000;
 #endif
   base[at] = uint8_t(value >> 24);
@@ -249,6 +251,7 @@ REX_EXTERN(sub_8264FB38) {
     if (!is_nested && ctx.r3.u32) {
       timeshift::renderer::BeginVerticesCompleted(device, primitive, count, stride, ctx.r3.u32);
     }
+    if (!is_nested) sa2::renut::MarkAll();
     if (!is_nested) {
       const uint64_t t3 = timeshift::telemetry::NowTicks();
       const uint64_t adp = (t1 > t0 ? (t1 - t0) : 0) + (t3 > t2 ? (t3 - t2) : 0);
@@ -302,6 +305,7 @@ REX_EXTERN(sub_82650020) {
           device, primitive, vertex_base, vertices, count, format, stride,
           Word(base, out_vertices), Word(base, out_indices));
     }
+    if (!is_nested) sa2::renut::MarkAll();
     if (!is_nested) {
       const uint64_t t3 = timeshift::telemetry::NowTicks();
       const uint64_t adp = (t1 > t0 ? (t1 - t0) : 0) + (t3 > t2 ? (t3 - t2) : 0);
@@ -340,6 +344,7 @@ REX_EXTERN(sub_8264A810) {
     const uint64_t t1 = timeshift::telemetry::NowTicks();
     timeshift::telemetry::g_ticks_draw_adapter.fetch_add(t1 > t0 ? (t1 - t0) : 0, std::memory_order_relaxed);
     __imp__sub_8264A810(ctx, base);
+    sa2::renut::MarkAll();
     const uint64_t t2 = timeshift::telemetry::NowTicks();
     const uint64_t dt = t2 > t1 ? (t2 - t1) : 0;
     timeshift::telemetry::g_ticks_orig_d3d.fetch_add(dt, std::memory_order_relaxed);
@@ -377,6 +382,7 @@ REX_EXTERN(sub_8264C8E8) {
     const uint64_t t1 = timeshift::telemetry::NowTicks();
     timeshift::telemetry::g_ticks_draw_adapter.fetch_add(t1 > t0 ? (t1 - t0) : 0, std::memory_order_relaxed);
     __imp__sub_8264C8E8(ctx, base);
+    sa2::renut::MarkAll();
     const uint64_t t2 = timeshift::telemetry::NowTicks();
     const uint64_t dt = t2 > t1 ? (t2 - t1) : 0;
     timeshift::telemetry::g_ticks_orig_d3d.fetch_add(dt, std::memory_order_relaxed);
@@ -386,5 +392,111 @@ REX_EXTERN(sub_8264C8E8) {
     std::fprintf(stderr, "[draw] sub_8264C8E8 EXCEPTION: %s\n", e.what());
     std::fflush(stderr);
     ctx.r3.u64 = 0x80004005u;
+  }
+}
+
+namespace {
+
+constexpr std::array<sa2::renut::ChunkBits, 16> MakeStreamMarksTable() {
+  std::array<sa2::renut::ChunkBits, 16> t{};
+  for (uint32_t i = 0; i < 16u; ++i) {
+    t[i] = sa2::renut::MarkBits(12452u + i * 4u, 4u) |
+           sa2::renut::MarkBits(12520u + i, 1u) |
+           sa2::renut::MarkBits(1776u + (17u - i) * 8u, 16u);
+  }
+  return t;
+}
+
+constexpr std::array<sa2::renut::ChunkBits, 26> MakeTexMarksTable() {
+  std::array<sa2::renut::ChunkBits, 26> t{};
+  for (uint32_t i = 0; i < 26u; ++i) {
+    t[i] = sa2::renut::MarkBits(0x480u + i * 24u, 24u) |
+           sa2::renut::MarkBits(12536u + i * 4u, 4u);
+  }
+  return t;
+}
+
+inline constexpr auto kStreamMarks = MakeStreamMarksTable();
+inline constexpr auto kTexMarks = MakeTexMarksTable();
+
+constexpr sa2::renut::ChunkBits kBitsScissor = sa2::renut::MarkBits(12668u, 16u);
+constexpr sa2::renut::ChunkBits kBitsIndices = sa2::renut::MarkBits(12428u, 4u);
+constexpr sa2::renut::ChunkBits kBitsViewport = sa2::renut::MarkBits(12640u, 28u) | kBitsScissor;
+constexpr sa2::renut::ChunkBits kBitsRenderTarget =
+    sa2::renut::MarkBits(10460u, 4u) | sa2::renut::MarkBits(11852u, 16u) | sa2::renut::MarkBits(12432u, 16u);
+constexpr sa2::renut::ChunkBits kBitsDepthStencil =
+    sa2::renut::MarkBits(10368u, 4u) | sa2::renut::MarkBits(10376u, 4u) |
+    sa2::renut::MarkBits(10548u, 4u) | sa2::renut::MarkBits(10560u, 4u) |
+    sa2::renut::MarkBits(11868u, 8u) | sa2::renut::MarkBits(12448u, 4u);
+constexpr sa2::renut::ChunkBits kBitsPixelShader = sa2::renut::MarkBits(12684u, 4u);
+constexpr sa2::renut::ChunkBits kBitsVertexShader = sa2::renut::MarkBits(12688u, 4u);
+
+template <sa2::renut::ChunkBits Bits>
+inline void ForwardAndMarkFixed(PPCFunc* fn, PPCContext& ctx, uint8_t* base) {
+  const uint32_t device = ctx.r3.u32;
+  fn(ctx, base);
+  sa2::renut::MarkFixed<Bits.w[0], Bits.w[1]>(device);
+}
+
+inline void ForwardAndMarkAll(PPCFunc* fn, PPCContext& ctx, uint8_t* base) {
+  const uint32_t device = ctx.r3.u32;
+  fn(ctx, base);
+  if (device == sa2::renut::MarkedDevice()) {
+    sa2::renut::MarkAll();
+  }
+}
+
+}  // namespace
+
+#define TIMESHIFT_MARK_FIXED_HOOK(addr, bits) \
+  REX_EXTERN(__imp__##addr);                  \
+  REX_EXTERN(addr) { ForwardAndMarkFixed<bits>(__imp__##addr, ctx, base); }
+
+#define TIMESHIFT_MARK_ALL_HOOK(addr) \
+  REX_EXTERN(__imp__##addr);          \
+  REX_EXTERN(addr) { ForwardAndMarkAll(__imp__##addr, ctx, base); }
+
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263C858, kBitsScissor)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263CA78, kBitsIndices)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263CD90, kBitsViewport)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263D140, kBitsRenderTarget)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263D4A8, kBitsDepthStencil)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263F608, kBitsPixelShader)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263F8C0, kBitsVertexShader)
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263B308, sa2::renut::MarkBits(11876u, 4u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263BE48, sa2::renut::MarkBits(11844u, 4u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_8263CFF8, sa2::renut::MarkBits(11848u, 4u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_82652A28, sa2::renut::MarkBits(11796u, 4u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_82654730, sa2::renut::MarkBits(10560u, 4u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_82655AB0, sa2::renut::MarkBits(11824u, 12u))
+TIMESHIFT_MARK_FIXED_HOOK(sub_82655CC0, sa2::renut::MarkBits(11824u, 12u))
+
+TIMESHIFT_MARK_ALL_HOOK(sub_82640710)
+TIMESHIFT_MARK_ALL_HOOK(sub_82652DB8)
+TIMESHIFT_MARK_ALL_HOOK(sub_82653738)
+
+REX_EXTERN(sub_82655E00) { ForwardAndMarkAll(__imp__sub_82655E00, ctx, base); }
+
+REX_EXTERN(__imp__sub_8263C958);
+REX_EXTERN(sub_8263C958) {
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t stream = ctx.r4.u32;
+  __imp__sub_8263C958(ctx, base);
+  if (stream < kStreamMarks.size()) {
+    sa2::renut::Mark(device, kStreamMarks[stream]);
+  } else if (device == sa2::renut::MarkedDevice()) {
+    sa2::renut::MarkAll();
+  }
+}
+
+REX_EXTERN(__imp__sub_82649548);
+REX_EXTERN(sub_82649548) {
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t stage = ctx.r4.u32;
+  __imp__sub_82649548(ctx, base);
+  if (stage < kTexMarks.size()) {
+    sa2::renut::Mark(device, kTexMarks[stage]);
+  } else if (device == sa2::renut::MarkedDevice()) {
+    sa2::renut::MarkAll();
   }
 }

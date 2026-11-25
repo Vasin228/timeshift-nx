@@ -19,6 +19,9 @@
 
 #include <fmt/format.h>
 #include <rex/cvar.h>
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
 
 #include "renut_engine/gpu/guest/callbacks.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
@@ -138,8 +141,8 @@ QueuedKeys g_keys;
   k.precise = k.marks && REXCVAR_GET(sa2_renut_setters_precise);
   k.spin = REXCVAR_GET(sa2_renut_lockfree_queue);
 #if defined(TIMESHIFT_RECOMP)
-  // TimeShift has no SA2 setter marks; keep marks/precise off while allowing NEON snapshot deltas.
-  k.marks = k.copy = k.precise = false;
+  // TimeShift Stage 6: enable SetterMarks + MarksCopy (every-32nd-draw check guards every chunk).
+  k.precise = false;
 #endif
   k.ready = false;
   g_keys = k;
@@ -435,9 +438,20 @@ public:
       mutex_.lock();
       return;
     }
+    uint32_t spins = 0;
     while (held_.exchange(true, std::memory_order_acquire)) {
-      while (held_.load(std::memory_order_relaxed))
+      while (held_.load(std::memory_order_relaxed)) {
+#if defined(__SWITCH__)
+        if (++spins < 16u) {
+          std::this_thread::yield();
+        } else {
+          svcSleepThread(50000ULL);
+        }
+#else
+        (void)spins;
         std::this_thread::yield();
+#endif
+      }
     }
   }
   bool try_lock() {
@@ -683,8 +697,12 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     return nullptr;
   DeltaChain &c = g_delta;
   DrawCapture *capture = g_capture_pool.Take(true);
+#if defined(TIMESHIFT_RECOMP)
+  g_capture_pool.PrefetchChainNext();
+#else
   if (MarksCopyOn())
     g_capture_pool.PrefetchChainNext();  // sa2-nx (2026-10-28): the next draws' captures, for writing
+#endif
   capture->call = call;
   capture->call.up_vertices = nullptr;
   capture->call.up_indices = nullptr;

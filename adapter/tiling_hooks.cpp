@@ -1,6 +1,7 @@
 #include "sdk_tiling_host.h"
 #include "device_registry.h"
 #include "perf_breakdown.h"
+#include "renut_engine/gpu/sa2_setter_marks.h"
 #include <rex/ppc.h>
 #include <cstdio>
 #include <exception>
@@ -16,6 +17,7 @@ REX_EXTERN(sub_8264B8C0){
     if(Owned(ctx.r3.u32)){
       const uint64_t t0=timeshift::telemetry::NowTicks();
       timeshift::renderer::NativeBeginTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      sa2::renut::MarkAll();
       const uint64_t t1=timeshift::telemetry::NowTicks();
       timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
       timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);
@@ -31,6 +33,7 @@ REX_EXTERN(sub_8264BD58){
     if(Owned(ctx.r3.u32)){
       const uint64_t t0=timeshift::telemetry::NowTicks();
       timeshift::renderer::NativeEndTiling(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      sa2::renut::MarkAll();
       const uint64_t t1=timeshift::telemetry::NowTicks();
       timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
       timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);
@@ -46,6 +49,7 @@ REX_EXTERN(sub_8264B750){
     if(Owned(ctx.r3.u32)){
       const uint64_t t0=timeshift::telemetry::NowTicks();
       timeshift::renderer::NativeSetPredication(ctx,base,timeshift::renderer::DeviceRegistryRuntime());
+      sa2::renut::MarkAll();
       const uint64_t t1=timeshift::telemetry::NowTicks();
       timeshift::telemetry::g_ticks_tiling.fetch_add(t1>t0?(t1-t0):0,std::memory_order_relaxed);
       timeshift::telemetry::g_count_tiling.fetch_add(1,std::memory_order_relaxed);

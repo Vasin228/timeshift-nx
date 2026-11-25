@@ -1033,11 +1033,15 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
     }
   } else {
     if (timeout_ms == 0) {
+#if defined(__SWITCH__)
+      rex::thread::Sleep(std::chrono::microseconds(100));
+#else
       if (priority_ <= rex::thread::ThreadPriority::kBelowNormal) {
         rex::thread::Sleep(std::chrono::microseconds(100));
       } else {
         rex::thread::MaybeYield();
       }
+#endif
     } else {
       rex::thread::Sleep(std::chrono::milliseconds(timeout_ms));
     }

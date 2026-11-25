@@ -23,7 +23,11 @@
 
 #include <cstdint>
 
+#if defined(TIMESHIFT_RECOMP)
+#include "renut_engine/gpu/timeshift_setter_marks_tags.h"
+#else
 #include "renut_engine/gpu/sa2_setter_marks_tags.h"
+#endif
 
 namespace sa2::renut {
 

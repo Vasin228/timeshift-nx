@@ -147,6 +147,7 @@ namespace plume {
         virtual bool resize() = 0;
         virtual bool needsResize() const = 0;
         virtual void setVsyncEnabled(bool vsyncEnabled) = 0;
+        virtual void setSwapInterval(uint32_t interval) { setVsyncEnabled(interval > 0); }
         virtual bool isVsyncEnabled() const = 0;
         virtual uint32_t getWidth() const = 0;
         virtual uint32_t getHeight() const = 0;
