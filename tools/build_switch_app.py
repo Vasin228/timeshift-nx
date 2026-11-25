@@ -24,7 +24,11 @@ AARCH64_NM = DEVKITPRO / 'devkitA64/bin/aarch64-none-elf-nm'
 ELF2NRO = DEVKITPRO / 'tools/bin/elf2nro'
 NACPTOOL = DEVKITPRO / 'tools/bin/nacptool'
 
-DEFAULT_NACB = Path('/root/lab/switch-build-app/timeshift_nro.default.nacp')
+SDK_SRC = Path(os.environ.get('REXGLUE_SDK_DIR', '/root/lab/rexglue-sdk' if Path('/root/lab/rexglue-sdk').exists() else str(ROOT / 'private/sdk')))
+SDK_OUT = Path(os.environ.get('REXGLUE_SDK_OUT', str(SDK_SRC / 'out/switch-arm64')))
+SWITCH_APP_CACHE = Path(os.environ.get('SWITCH_BUILD_APP_DIR', '/root/lab/switch-build-app'))
+
+DEFAULT_NACB = SWITCH_APP_CACHE / 'timeshift_nro.default.nacp'
 DEFAULT_ICON = DEVKITPRO / 'libnx/default_icon.jpg'
 APP_NACP = BUILD_APP / 'timeshift.nacp'
 APP_ICON = ROOT / 'assets/icon.jpg'
@@ -67,11 +71,11 @@ def compile_app_units():
         f'-I{ROOT}/private/sdk/include',
         f'-I{ROOT}/upstream/sa2-nx/app/src/renut_engine/gpu/../sa2_compat',
         f'-I{ROOT}/private/sdk/src/core',
-        '-I/root/lab/rexglue-sdk/thirdparty/simde',
-        '-I/root/lab/rexglue-sdk/thirdparty/fmt/include',
-        '-I/root/lab/rexglue-sdk/thirdparty/spdlog/include',
-        '-I/root/lab/rexglue-sdk/thirdparty/imgui',
-        '-I/root/lab/rexglue-sdk/thirdparty/o1heap/o1heap',
+        f'-I{SDK_SRC}/thirdparty/simde',
+        f'-I{SDK_SRC}/thirdparty/fmt/include',
+        f'-I{SDK_SRC}/thirdparty/spdlog/include',
+        f'-I{SDK_SRC}/thirdparty/imgui',
+        f'-I{SDK_SRC}/thirdparty/o1heap/o1heap',
         f'-I{ROOT}/upstream/sa2-nx/app/thirdparty/reblue-XenosRecomp/XenosRecomp',
         f'-I{ROOT}/upstream/sa2-nx/app/thirdparty/plume',
         f'-I{ROOT}/upstream/sa2-nx/app/thirdparty/plume/contrib/volk',
@@ -79,8 +83,8 @@ def compile_app_units():
         f'-I{ROOT}/upstream/sa2-nx/app/thirdparty/plume/contrib/VulkanMemoryAllocator/include',
         '-I/opt/nvk-switch/include',
         '-I/opt/devkitpro/portlibs/switch/include',
-        '-I/root/lab/rexglue-sdk/include',
-        '-I/root/lab/switch-build-app/rexglue-sdk/include',
+        f'-I{SDK_SRC}/include',
+        f'-I{SWITCH_APP_CACHE}/rexglue-sdk/include',
         f'-I{ROOT}/private/app',
         f'-I{ROOT}/private/app/src',
         f'-I{ROOT}/private/app/generated/default',
@@ -231,15 +235,15 @@ def link_candidate(objects):
         str(BUILD_CORE / 'libts_renut_zstd.a'),
         str(BUILD_CORE / 'libts_renut_smolv.a'),
         str(BUILD_CORE / 'libts_renut_xxhash.a'),
-        '/root/lab/rexglue-sdk/out/switch-arm64/librexruntimerd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/librexui_vk.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libaes128rd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libmspackrd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libo1heaprd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libspdlogrd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libfmtrd.a',
-        '/root/lab/rexglue-sdk/out/switch-arm64/libxxhashrd.a',
-        '/root/lab/nvk_compat.o',
+        str(SDK_OUT / 'librexruntimerd.a'),
+        str(SDK_OUT / 'librexui_vk.a'),
+        str(SDK_OUT / 'libaes128rd.a'),
+        str(SDK_OUT / 'libmspackrd.a'),
+        str(SDK_OUT / 'libo1heaprd.a'),
+        str(SDK_OUT / 'libspdlogrd.a'),
+        str(SDK_OUT / 'libfmtrd.a'),
+        str(SDK_OUT / 'libxxhashrd.a'),
+        os.environ.get('NVK_COMPAT_OBJ', '/root/lab/nvk_compat.o'),
         '/root/lab/xma_zero_delay.o' if Path('/root/lab/xma_zero_delay.o').exists() else str(ROOT / 'adapter/xma_zero_delay.o'),
         '-ldeko3d',
         '-lavcodec',

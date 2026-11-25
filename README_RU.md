@@ -106,21 +106,28 @@ timeshift-nx/
 ## Сборка
 
 ### Что нужно:
-- **devkitPro** (`devkitA64`, `libnx`, `deko3d`).
-- **Linux или WSL2** (Ubuntu/Debian).
-- **Python 3.10+**, **CMake**, **Ninja**.
+- **devkitPro** (`dkp-pacman`) со следующими пакетами для Switch:
+  - `devkitA64` (`aarch64-none-elf-g++`), `libnx`, `deko3d`, `devkitpro-pkgbuild-helpers`
+  - Библиотеки (`portlibs`): `switch-ffmpeg`, `switch-dav1d`, `switch-zlib`
+- **Linux или WSL2** (Ubuntu/Debian), **Python 3.10+**, **CMake 3.25+**, **Ninja**.
+- **Поддерживаемый дамп Xbox 360 (`default.xex`)**:
+  - `SHA-256`: `0EB9B13DE4B44B14F89907B91973209112BCA8F229CF7B55E26CC5DAA0841050`
+  - *(Другие ревизии или Title Update имеют другие адреса функций и без перенастройки `private/app/timeshift_manifest.toml` несовместимы.)*
 
 ### Команды:
 
-1. **Сборка внутренней библиотеки (`rexruntime`):**
+1. **Сгенерируйте C++-код игры локально** из вашего `default.xex` (`private/dump360/default.xex`) через кодогенератор ReXGlue (`private/app/timeshift_manifest.toml` -> `private/app/generated/`).
+2. **Сконфигурируйте и соберите внутренний рантайм (`private/sdk`):**
    ```bash
-   cd private/sdk
-   ninja -C /path/to/switch-build rexaudio rexruntime
+   cmake -S private/sdk -B build/sdk-switch -G Ninja \
+     -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake \
+     -DCMAKE_BUILD_TYPE=RelWithDebInfo
+   ninja -C build/sdk-switch rexaudio rexruntime
    ```
-
-2. **Сборка файла для Switch (`timeshift.nro`):**
+3. **Соберите файл для Switch (`timeshift.nro`):**
    ```bash
-   python3 tools/build_switch_app.py
+   REXGLUE_SDK_DIR=$PWD/private/sdk REXGLUE_SDK_OUT=$PWD/private/sdk/out/switch-arm64 \
+     python3 tools/build_switch_app.py
    ```
    Готовый файл появится в `build/app-switch/timeshift.nro`.
 

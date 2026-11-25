@@ -108,24 +108,28 @@ timeshift-nx/
 ## How to Build
 
 ### Prerequisites:
-- **devkitPro** with packages:
-  - `devkitA64` (`aarch64-none-elf-g++`)
-  - `libnx`
-  - `deko3d`
-- **Linux or WSL2** (Ubuntu/Debian).
-- **Python 3.10+**, **CMake**, **Ninja**.
+- **devkitPro** (`dkp-pacman`) with Switch packages:
+  - `devkitA64` (`aarch64-none-elf-g++`), `libnx`, `deko3d`, `devkitpro-pkgbuild-helpers`
+  - Switch portlibs: `switch-ffmpeg`, `switch-dav1d`, `switch-zlib`
+- **Linux or WSL2** (Ubuntu/Debian), **Python 3.10+**, **CMake 3.25+**, **Ninja**.
+- **Supported Xbox 360 Dump (`default.xex`)**:
+  - `SHA-256`: `0EB9B13DE4B44B14F89907B91973209112BCA8F229CF7B55E26CC5DAA0841050`
+  - *(Other revisions or Title Updates have different function addresses and will fail or crash without updating `private/app/timeshift_manifest.toml`.)*
 
 ### Build Commands:
 
-1. **Build internal runtime (`rexruntime`):**
+1. **Generate guest C++ sources locally** from your `default.xex` (`private/dump360/default.xex`) using ReXGlue codegen (`private/app/timeshift_manifest.toml` -> `private/app/generated/`).
+2. **Configure & build internal runtime (`private/sdk`):**
    ```bash
-   cd private/sdk
-   ninja -C /path/to/switch-build rexaudio rexruntime
+   cmake -S private/sdk -B build/sdk-switch -G Ninja \
+     -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake \
+     -DCMAKE_BUILD_TYPE=RelWithDebInfo
+   ninja -C build/sdk-switch rexaudio rexruntime
    ```
-
-2. **Build Switch binary (`timeshift.nro`):**
+3. **Build Switch binary (`timeshift.nro`):**
    ```bash
-   python3 tools/build_switch_app.py
+   REXGLUE_SDK_DIR=$PWD/private/sdk REXGLUE_SDK_OUT=$PWD/private/sdk/out/switch-arm64 \
+     python3 tools/build_switch_app.py
    ```
    The output binary will be created at: `build/app-switch/timeshift.nro`.
 
