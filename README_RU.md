@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Nintendo%20Switch-Horizon%20OS-E60012?style=for-the-badge&logo=nintendo-switch&logoColor=white" height="28" alt="Nintendo Switch" />
   <img src="https://img.shields.io/badge/Renderer-deko3d%20(Tegra%20X1)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" height="28" alt="deko3d" />
   <img src="https://img.shields.io/badge/Arch-AArch64%20%7C%20C%2B%2B23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" height="28" alt="AArch64 C++23" />
-  <img src="https://img.shields.io/badge/License-BSD--3--Clause-4A5568?style=for-the-badge" height="28" alt="BSD-3-Clause" />
+  <img src="https://img.shields.io/badge/License-GPL--3.0-4A5568?style=for-the-badge" height="28" alt="GPL-3.0" />
 </p>
 
 <p align="center">
@@ -96,7 +96,8 @@ timeshift-nx/
 |   |-- prepare_switch_cache.py    # Подготовка шейдеров и ассетов
 |   `-- deploy_candidate.py        # Заливка на Switch по FTP
 |-- MODLOG.md             # Лог этапов разработки (части 286-292; старые в архивах)
-|-- deko3d_shaders_f0.bin # Собранный кэш шейдеров deko3d
+|-- LICENSE               # Лицензия GNU GPL v3.0
+|-- THIRD_PARTY_NOTICES.md # Сторонние проекты, библиотеки и ссылки на лицензии
 `-- timeshift.toml        # Конфиг для запуска игры на Switch
 ```
 
@@ -195,4 +196,6 @@ timeshift-nx/
 
 TimeShift является зарегистрированной торговой маркой Saber Interactive / Sierra / Activision. Данный репозиторий представляет собой неофициальное некоммерческое исследование в области обратной разработки и статической рекомпиляции.
 
-Исходный код в данном репозитории распространяется в образовательных и исследовательских целях на условиях лицензии BSD 3-Clause и соответствующих лицензий upstream-проектов. Ассеты оригинальной игры (модели, текстуры, звук, игровые скрипты) защищены авторским правом их законных владельцев и НЕ входят в состав данного репозитория.
+Исходный код в данном репозитории распространяется по лицензии **GNU General Public License v3.0** ([LICENSE](LICENSE)), компоненты ReXGlue SDK (`private/sdk/`) — по лицензии **BSD 3-Clause** ([private/sdk/LICENSE](private/sdk/LICENSE)), а сторонние библиотеки — по их собственным открытым лицензиям. Полный список проектов, библиотек, лицензий и ссылок приведён в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Ассеты оригинальной игры (модели, текстуры, звук, скрипты), `default.xex`, сгенерированный рекомпилированный код (`private/app/generated/`) и предкомпилированные кэши шейдеров игры (`deko3d_shaders_f0.bin`, `deko3d_glsl.bin`) защищены авторским правом их законных владельцев и **НЕ** входят в состав данного репозитория.

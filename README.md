@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Nintendo%20Switch-Horizon%20OS-E60012?style=for-the-badge&logo=nintendo-switch&logoColor=white" height="28" alt="Nintendo Switch" />
   <img src="https://img.shields.io/badge/Renderer-deko3d%20(Tegra%20X1)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" height="28" alt="deko3d" />
   <img src="https://img.shields.io/badge/Arch-AArch64%20%7C%20C%2B%2B23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" height="28" alt="AArch64 C++23" />
-  <img src="https://img.shields.io/badge/License-BSD--3--Clause-4A5568?style=for-the-badge" height="28" alt="BSD-3-Clause" />
+  <img src="https://img.shields.io/badge/License-GPL--3.0-4A5568?style=for-the-badge" height="28" alt="GPL-3.0" />
 </p>
 
 <p align="center">
@@ -98,7 +98,8 @@ timeshift-nx/
 |   |-- prepare_switch_cache.py    # Prepares shaders and assets
 |   `-- deploy_candidate.py        # Deploys to Switch via FTP
 |-- MODLOG.md             # Development chronicle (Parts 286-292; earlier in archives)
-|-- deko3d_shaders_f0.bin # Precompiled deko3d shader cache
+|-- LICENSE               # GNU GPL v3.0 license
+|-- THIRD_PARTY_NOTICES.md # Third-party projects, libraries & license attributions
 `-- timeshift.toml        # Game configuration file for Switch
 ```
 
@@ -201,4 +202,6 @@ If you manage to fix any of the remaining issues or improve performance:
 
 TimeShift is a registered trademark of Saber Interactive / Sierra / Activision. This repository is an unofficial, non-commercial reverse-engineering and static recompilation research project.
 
-The source code in this repository is distributed for educational and research purposes under the terms of the BSD 3-Clause License and applicable upstream licenses. Original game assets (models, textures, audio, game scripts) are copyrighted by their respective owners and are NOT included in this repository.
+The source code in this repository is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)), with the ReXGlue SDK (`private/sdk/`) under the **BSD 3-Clause License** ([private/sdk/LICENSE](private/sdk/LICENSE)) and third-party components under their respective open-source licenses — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full list and links.
+
+Original game assets (models, textures, audio, scripts), `default.xex`, statically recompiled game code (`private/app/generated/`), and precompiled game shader caches (`deko3d_shaders_f0.bin`, `deko3d_glsl.bin`) are copyrighted by their respective owners and are **NOT** included in this repository.

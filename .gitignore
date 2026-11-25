@@ -50,6 +50,9 @@ user/
 cache/
 shader_capture*/
 private/dump360/
+private/app/generated/
+deko3d_shaders_f0.bin
+deko3d_glsl.bin
 *.xex
 *.s3dpak
 *.sdrc
