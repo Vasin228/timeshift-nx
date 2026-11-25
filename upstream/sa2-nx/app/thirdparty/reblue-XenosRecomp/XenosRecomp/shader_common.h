@@ -247,13 +247,13 @@ uint renutDescriptor(uint resourceDescriptorIndex)
     return resourceDescriptorIndex & RENUT_DESCRIPTOR_INDEX_MASK;
 }
 
-// Host texels per guest texel, by the host's RenderScale code (render_scale.h): 1x, 2/3 (480p),
+// Host texels per guest texel, by the host's RenderScale code (render_scale.h): 1x, 3/4 (540p),
 // 1.5 (1080p), 2 (1440p), 3 (4K), 4, 6 and 4/3 (shadow maps and ambient occlusion rendered finer).
 float renutTextureScale(uint resourceDescriptorIndex)
 {
     const uint code = (resourceDescriptorIndex >> RENUT_RESOLUTION_SCALE_SHIFT) & 7u;
     // banjo-nx: select(), not a chain of ?: (a branch each; the code is the descriptor's, known only at run time).
-    return select(code == 1u, 2.0 / 3.0,
+    return select(code == 1u, 0.75,
            select(code == 2u, 1.5,
            select(code == 3u, 2.0,
            select(code == 4u, 3.0,

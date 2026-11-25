@@ -50,6 +50,7 @@
 #include "host_shaders/depth_resolve_ps.spirv.h"
 #include "host_shaders/present_ps.spirv.h"
 #include "host_shaders/present_vs.spirv.h"
+#include "host_shaders/fsr_easu_ps.spirv.h"
 #include "host_shaders/rectangle_list_gs.spirv.h"
 #include "host_shaders/point_sprite_gs.spirv.h"
 #include "host_shaders/stream_convert_cs.spirv.h"
@@ -61,6 +62,7 @@
 #include "host_shaders/depth_resolve_ps.deko3d.h"
 #include "host_shaders/present_ps.deko3d.h"
 #include "host_shaders/present_vs.deko3d.h"
+#include "host_shaders/fsr_easu_ps.deko3d.h"
 #include "host_shaders/rectangle_list_gs.deko3d.h"
 #include "host_shaders/point_sprite_gs.deko3d.h"
 #include "host_shaders/stream_convert_cs.deko3d.h"
@@ -73,6 +75,7 @@
 #include "host_shaders/depth_resolve_ps.dxil.h"
 #include "host_shaders/present_ps.dxil.h"
 #include "host_shaders/present_vs.dxil.h"
+#include "host_shaders/fsr_easu_ps.dxil.h"
 #include "host_shaders/rectangle_list_gs.dxil.h"
 #include "host_shaders/point_sprite_gs.dxil.h"
 #include "host_shaders/stream_convert_cs.dxil.h"
@@ -358,6 +361,15 @@ bool BuildPresentPipeline(VideoState &s) {
     return false;
   }
   s.present_pipeline->setName("renut present");
+
+  s.fsr_easu_ps = CreateHostShader(s.device.get(), RENUT_HOST_SHADER(fsr_easu_ps), "fsr_easu_ps");
+  if (s.fsr_easu_ps) {
+    desc.pixelShader = s.fsr_easu_ps.get();
+    desc.renderTargetFormat[0] = plume::RenderFormat::R8G8B8A8_UNORM;
+    s.fsr_easu_pipeline = s.device->createGraphicsPipeline(desc);
+    if (s.fsr_easu_pipeline)
+      s.fsr_easu_pipeline->setName("renut fsr easu");
+  }
   return true;
 }
 

@@ -56,6 +56,7 @@ REXCVAR_DECLARE(bool, renut_skip_shadows);
 #include "renut_engine/gpu/banjo_renut_record.h"  // banjo-nx (package 28b)
 #if defined(TIMESHIFT_RECOMP)
 #include "perf_breakdown.h"
+#include "renut_engine/gpu/guest/widescreen.h"
 #endif
 #include <rex/cvar.h>
 
@@ -349,6 +350,9 @@ struct Bound {
   ConstantUpload pushed_vs, pushed_ps;
   bool blend_constant_set = false;
   float blend_constant[4] = {};
+  bool depth_bias_set = false;
+  float depth_bias_constant = 0.0f;
+  float depth_bias_slope = 0.0f;
 
   // State as the draws last set it on the list, which most draws in a row
   // share (the viewport, the zero stream, the memexport buffer): setting it
@@ -506,6 +510,45 @@ bool DrawBlendConstant(const d3d::Device &dev, const PipelineKey &key, float rgb
   rgba[2] = replicate_alpha ? alpha : float(v.BlendBlue);
   rgba[3] = alpha;
   return true;
+}
+
+// Xenos D3DRS_DEPTHBIAS / D3DRS_SLOPESCALEDEPTHBIAS (PA_SU_POLY_OFFSET_*, ModeControl bits 11..13)
+// translated to host Deko3D/Vulkan dynamic depth bias units.
+void DrawDepthBias(const GuestDevice &device, u32 primitive, const HostSurface *depth,
+                   float &constant_factor, float &slope_factor) {
+  constant_factor = 0.0f;
+  slope_factor = 0.0f;
+  if (!depth)
+    return;
+  const u32 mode = u32(device.dev().m_ControlPacket.ModeControl);
+  const bool polygonal = primitive != kPointList && primitive != kLineList &&
+                         primitive != kLineStrip && primitive != kRectangleList &&
+                         primitive != kLineLoop;
+  float raw_scale = 0.0f;
+  float raw_offset = 0.0f;
+  if (polygonal) {
+    if ((mode & 0x800u) && !(mode & 1u)) {
+      raw_scale = device.F32(0x2A50);
+      raw_offset = device.F32(0x2A54);
+    }
+    if ((mode & 0x1000u) && !(mode & 2u) && raw_scale == 0.0f && raw_offset == 0.0f) {
+      raw_scale = device.F32(0x2A58);
+      raw_offset = device.F32(0x2A5C);
+    }
+  } else if (mode & 0x2000u) {
+    raw_scale = device.F32(0x2A50);
+    raw_offset = device.F32(0x2A54);
+  }
+  if (!std::isfinite(raw_scale))
+    raw_scale = 0.0f;
+  if (!std::isfinite(raw_offset))
+    raw_offset = 0.0f;
+  if (raw_scale == 0.0f && raw_offset == 0.0f)
+    return;
+  slope_factor = raw_scale * (1.0f / 16.0f);
+  const bool is_float24 = (depth->format_word & 0x3Fu) == u32(GpuTextureFormat::Fmt24_8_Float);
+  const float unit = is_float24 ? float(UINT32_C(1) << 24) : float((UINT32_C(1) << 24) - 1);
+  constant_factor = raw_offset * unit;
 }
 
 std::vector<u32> g_indices;  // scratch for index reads
@@ -1421,7 +1464,11 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
   key[20] = t.guest_height;
   key[21] = t.scale.code;
   key[22] = t.msaa_scale_x | (t.msaa_scale_y << 4);
+#if defined(TIMESHIFT_RECOMP)
+  key[23] = (t.color_count ? 1u : 0u) | (t.depth ? 2u : 0u);
+#else
   key[23] = 0;
+#endif
   static u32 last_key[24];
   static ViewportState last;
   static bool valid = false;
@@ -1541,8 +1588,23 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
   // that. Depth is not scaled.
   vs.guest_size[0] = vs.viewport.width;
   vs.guest_size[1] = vs.viewport.height;
+#if defined(TIMESHIFT_RECOMP)
+  // Keep depthless half-res-or-smaller HDR luminance/bloom sub-passes on 1280x720 at 1:1 host pixels
+  // so 256->64->16->4->1 downsampling & 1x1 eye adaptation never drop texels or smear border garbage.
+  const bool unscaled_subpass = t.scale.Factor() < 1.0f && !one_tile && !vs.screen_space &&
+                                t.color_count > 0 && !t.depth &&
+                                t.guest_width == GuestScreenWidth() && t.guest_height == 720u &&
+                                sx1 == 0 && sy1 == 0 &&
+                                sx2 * 2 <= int32_t(t.guest_width) && sy2 * 2 <= int32_t(t.guest_height) &&
+                                sx2 <= int32_t(t.scale.Size(logical_w)) && sy2 <= int32_t(t.scale.Size(logical_h));
+  const float scale_x = (unscaled_subpass ? 1.0f : t.scale.Factor()) * float(t.msaa_scale_x);
+  const float scale_y = (unscaled_subpass ? 1.0f : t.scale.Factor()) * float(t.msaa_scale_y);
+  const RenderScale scissor_scale = unscaled_subpass ? RenderScale{} : t.scale;
+#else
   const float scale_x = t.scale.Factor() * float(t.msaa_scale_x);
   const float scale_y = t.scale.Factor() * float(t.msaa_scale_y);
+  const RenderScale scissor_scale = t.scale;
+#endif
   vs.viewport.x *= scale_x;
   vs.viewport.y *= scale_y;
   vs.viewport.width *= scale_x;
@@ -1551,7 +1613,7 @@ ViewportState ComputeViewportSlow(const GuestDevice &device, const Targets &t) {
                                            sy1 * int32_t(t.msaa_scale_y),
                                            sx2 * int32_t(t.msaa_scale_x),
                                            sy2 * int32_t(t.msaa_scale_y)),
-                         t.scale);
+                         scissor_scale);
   return vs;
 }
 
@@ -4890,6 +4952,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     std::fill(std::begin(g_bound.root_set), std::end(g_bound.root_set), false);
     std::fill(std::begin(g_bound.constant_sets), std::end(g_bound.constant_sets), nullptr);
   }
+  const bool reset_dynamic_bias = (g_bound.pipeline == nullptr);
   if (g_bound.pipeline != pipeline) {
     // banjo-nx: NVK's prefetch hint (the Switch); the record worker gives it itself, on the core that binds.
     if (!banjo::renut_gpu::record::IsProxy(cmd))
@@ -4899,6 +4962,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     // Vulkan: a pipeline without the constant as dynamic state overwrites it.
     if (IsVulkan())
       g_bound.blend_constant_set = false;
+    if (reset_dynamic_bias || IsVulkan())
+      g_bound.depth_bias_set = false;
   }
   float blend_constant[4];
   if (DrawBlendConstant(dev, key, blend_constant) &&
@@ -4913,6 +4978,18 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
         logged = true;
         RGPU_WARN("Draws blend with the blend constant, which this backend cannot set");
       }
+    }
+  }
+  if (s.device->getCapabilities().dynamicDepthBias) {
+    float depth_bias_constant = 0.0f, depth_bias_slope = 0.0f;
+    DrawDepthBias(device, call.primitive, targets.depth, depth_bias_constant, depth_bias_slope);
+    if (!g_bound.depth_bias_set ||
+        std::memcmp(&depth_bias_constant, &g_bound.depth_bias_constant, sizeof(float)) != 0 ||
+        std::memcmp(&depth_bias_slope, &g_bound.depth_bias_slope, sizeof(float)) != 0) {
+      cmd->setDepthBias(depth_bias_constant, 0.0f, depth_bias_slope);
+      g_bound.depth_bias_constant = depth_bias_constant;
+      g_bound.depth_bias_slope = depth_bias_slope;
+      g_bound.depth_bias_set = true;
     }
   }
 
@@ -6253,8 +6330,34 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
           }
         }
       }
-    } else if (HostTexture *dest = GetResolveTextureLocked(dest_texture_va, surface->format,
-                                                           surface->scale, dest_format)) {
+    } else if (HostTexture *dest = GetResolveTextureLocked(
+                   dest_texture_va, surface->format,
+                   [&]() -> RenderScale {
+                     RenderScale s = surface->scale;
+#if defined(TIMESHIFT_RECOMP)
+                     if (!surface->depth && surface->samples == plume::RenderSampleCount::COUNT_1 &&
+                         s.Factor() < 1.0f && surface->width == GuestScreenWidth() && surface->height == 720u) {
+                       const d3d::TextureFetchConstant *dfmt = dest_format;
+                       if (!dfmt) {
+                         if (const auto *header = GuestPtr<const d3d::BaseTexture>(dest_texture_va))
+                           dfmt = &header->Format;
+                       }
+                       if (dfmt) {
+                         const TextureFetch dfetch = TextureFetch::FromHeader(*dfmt);
+                         if (dfetch.IsTexture()) {
+                           u32 dw = 0, dh = 0, dd = 0;
+                           dfetch.Size(dw, dh, dd);
+                           if (((dw * 2 == surface->width && dh * 2 == surface->height) ||
+                                (dw <= 1 && dh <= 1)) &&
+                               dw <= s.Size(surface->width) && dh <= s.Size(surface->height))
+                             s = {};
+                         }
+                       }
+                     }
+#endif
+                     return s;
+                   }(),
+                   dest_format)) {
       ClearRect src;
       // A volume's slices are depth; stacked textures and cubes have layers.
       const bool volume = dest->dimension == TextureDimension::Tex3D && !dest->stacked;
@@ -6268,11 +6371,13 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
       } else if (fits) {
         dest->resolve_signature = sig;
         g_bound.framebuffer = nullptr;
-        // The destination is of the surface's scale.
-        plume::RenderRect rect =
-            ScaleRect(plume::RenderRect(src.x1, src.y1, src.x2, src.y2), surface->scale);
-        const uint32_t host_x = uint32_t(surface->scale.Coord(dest_x));
-        const uint32_t host_y = uint32_t(surface->scale.Coord(dest_y));
+        // The destination uses its own resolve scale (1x for unscaled HDR subpasses, otherwise surface->scale).
+        const bool same_scale = (dest->scale == surface->scale);
+        plume::RenderRect rect = same_scale
+                                     ? ScaleRect(plume::RenderRect(src.x1, src.y1, src.x2, src.y2), surface->scale)
+                                     : plume::RenderRect(src.x1, src.y1, src.x2, src.y2);
+        const uint32_t host_x = same_scale ? uint32_t(surface->scale.Coord(dest_x)) : uint32_t(dest_x);
+        const uint32_t host_y = same_scale ? uint32_t(surface->scale.Coord(dest_y)) : uint32_t(dest_y);
         // At a fractional scale the source rect, rounded at its own edges, can
         // pass the destination's host size by a texel.
         rect.right = std::min(rect.right, rect.left + int32_t(dest->alloc_width - host_x));
@@ -6283,7 +6388,7 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
         const bool multisampled = surface->samples != plume::RenderSampleCount::COUNT_1;
         // sa2-nx (2026-10-28, sa2_renut_colour_handover): left in the target's image, or (single-sampled)
         // copied as before (CopyColourResolveLocked: drawn or copied, then the host levels).
-        const bool handed = ColourHandOverResolveLocked(surface, dest, src, dest_x, dest_y, slice, z);
+        const bool handed = same_scale && ColourHandOverResolveLocked(surface, dest, src, dest_x, dest_y, slice, z);
         if (handed) {
           // banjo::renut_gpu::CountHandOver(0) counted it
         } else if (!multisampled) {

@@ -302,6 +302,7 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
   desc.frontFace = (key.mode_control & 4) ? plume::RenderFrontFace::CLOCKWISE
                                           : plume::RenderFrontFace::COUNTER_CLOCKWISE;
   desc.depthClipEnabled = true;
+  desc.dynamicDepthBiasEnabled = s.device->getCapabilities().dynamicDepthBias;
 
   // RB_DEPTHCONTROL.
   const u32 dc = key.depth_control;

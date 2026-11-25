@@ -258,6 +258,16 @@ struct VideoState {
   // steady_clock milliseconds of the last guest Swap presentation.
   std::atomic<int64_t> last_guest_present_ms{0};
   std::atomic<bool> shutting_down{false};
+#if defined(TIMESHIFT_RECOMP)
+  std::unique_ptr<plume::RenderShader> fsr_easu_ps;
+  std::unique_ptr<plume::RenderPipeline> fsr_easu_pipeline;
+  std::unique_ptr<plume::RenderTexture> fsr_target;
+  std::unique_ptr<plume::RenderTextureView> fsr_view;
+  std::unique_ptr<plume::RenderFramebuffer> fsr_framebuffer;
+  uint32_t fsr_slot = kInvalidDescriptor;
+  uint32_t fsr_width = 0;
+  uint32_t fsr_height = 0;
+#endif
 };
 
 // The renderer's state (constructed on first use). banjo-nx (2026-10-19): inline, a pointer load after the first call.

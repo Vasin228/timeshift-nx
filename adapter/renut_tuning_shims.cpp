@@ -426,6 +426,7 @@ void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
   if (!delta_rep.empty()) {
     REXLOG_INFO("[perf-delta] {}", delta_rep);
   }
+  FlushGuestProfilerWindow();
 }
 }  // namespace
 }  // namespace timeshift::telemetry
@@ -635,7 +636,7 @@ void CountKick() {}
 void CountDrawKind(bool depth_only, bool depth_only_plain, bool writes_nothing, bool partial_mask) {
   (void)depth_only; (void)depth_only_plain; (void)writes_nothing; (void)partial_mask;
 }
-uint64_t TextureReserveBytes() { return 192ull << 20; }
+uint64_t TextureReserveBytes() { return 320ull << 20; }
 uint64_t StreamCacheMaxBytes(uint64_t renut_max) { (void)renut_max; return 64ull << 20; }
 uint64_t StreamCacheIdleFrames(uint64_t renut_frames) { (void)renut_frames; return 600u; }
 uint32_t UploadTrimResets(uint32_t renut_resets, uint32_t frames_in_flight) {
@@ -1109,6 +1110,7 @@ REXCVAR_DECLARE(bool, renut_fps_overlay);
 REXCVAR_DECLARE(std::string, renut_fps_cap);
 REXCVAR_DECLARE(std::string, renut_resolution);
 REXCVAR_DECLARE(bool, renut_fxaa);
+REXCVAR_DECLARE(std::string, renut_fsr);
 REXCVAR_DECLARE(std::string, renut_anisotropic_filtering);
 REXCVAR_DECLARE(bool, renut_skip_orig_d3d);
 REXCVAR_DECLARE(bool, renut_deko3d_zcull);
@@ -1279,10 +1281,10 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
 
     int cur = timeshift::telemetry::g_menu_cursor.load(std::memory_order_relaxed);
     if (step_dir(kBtnUp)) {
-      cur = (cur + 12) % 13;
+      cur = (cur + 13) % 14;
       timeshift::telemetry::g_menu_cursor.store(cur, std::memory_order_relaxed);
     } else if (step_dir(kBtnDown)) {
-      cur = (cur + 1) % 13;
+      cur = (cur + 1) % 14;
       timeshift::telemetry::g_menu_cursor.store(cur, std::memory_order_relaxed);
     }
 
@@ -1308,9 +1310,9 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           break;
         }
         case 2: {
-          static constexpr const char* kResModes[] = {"Auto", "720p", "480p"};
+          static constexpr const char* kResModes[] = {"Auto", "720p", "540p"};
           const std::string cur_res = REXCVAR_GET(renut_resolution);
-          int idx = 0;
+          int idx = (cur_res == "480p") ? 2 : 0;
           for (int i = 0; i < 3; ++i) {
             if (cur_res == kResModes[i]) { idx = i; break; }
           }
@@ -1319,8 +1321,19 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           break;
         }
         case 3: REXCVAR_SET(renut_fxaa, !REXCVAR_GET(renut_fxaa)); break;
-        case 4: REXCVAR_SET(renut_skip_shadows, !REXCVAR_GET(renut_skip_shadows)); break;
-        case 5: {
+        case 4: {
+          static constexpr const char* kFsrModes[] = {"Off", "Low", "Med", "High", "EASU"};
+          const std::string cur_fsr = REXCVAR_GET(renut_fsr);
+          int idx = 2;
+          for (int i = 0; i < 5; ++i) {
+            if (cur_fsr == kFsrModes[i]) { idx = i; break; }
+          }
+          idx = (idx + dir + 5) % 5;
+          REXCVAR_SET(renut_fsr, std::string(kFsrModes[idx]));
+          break;
+        }
+        case 5: REXCVAR_SET(renut_skip_shadows, !REXCVAR_GET(renut_skip_shadows)); break;
+        case 6: {
           static constexpr int32_t kFarModes[] = {0, 200, 120, 80, 55, 40};
           const int32_t cur_m = REXCVAR_GET(renut_far_plane_m);
           int idx = 0;
@@ -1331,7 +1344,7 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           REXCVAR_SET(renut_far_plane_m, kFarModes[idx]);
           break;
         }
-        case 6: {
+        case 7: {
           static constexpr const char* kAfModes[] = {"Game", "2x", "4x", "8x"};
           const std::string cur_af = REXCVAR_GET(renut_anisotropic_filtering);
           int idx = 1;
@@ -1342,11 +1355,11 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
           REXCVAR_SET(renut_anisotropic_filtering, std::string(kAfModes[idx]));
           break;
         }
-        case 7: REXCVAR_SET(renut_skip_orig_d3d, !REXCVAR_GET(renut_skip_orig_d3d)); break;
-        case 8: REXCVAR_SET(renut_deko3d_zcull, !REXCVAR_GET(renut_deko3d_zcull)); break;
-        case 9: REXCVAR_SET(renut_deko3d_depth_compression, !REXCVAR_GET(renut_deko3d_depth_compression)); break;
-        case 10: REXCVAR_SET(renut_audio_reverb, !REXCVAR_GET(renut_audio_reverb)); break;
-        case 11: {
+        case 8: REXCVAR_SET(renut_skip_orig_d3d, !REXCVAR_GET(renut_skip_orig_d3d)); break;
+        case 9: REXCVAR_SET(renut_deko3d_zcull, !REXCVAR_GET(renut_deko3d_zcull)); break;
+        case 10: REXCVAR_SET(renut_deko3d_depth_compression, !REXCVAR_GET(renut_deko3d_depth_compression)); break;
+        case 11: REXCVAR_SET(renut_audio_reverb, !REXCVAR_GET(renut_audio_reverb)); break;
+        case 12: {
           const std::string cur_lvl = REXCVAR_GET(renut_force_level);
           int idx = 0;
           for (int i = 0; i < timeshift::telemetry::kCampaignLevelCount; ++i) {
@@ -1358,7 +1371,7 @@ void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
                       std::string(timeshift::telemetry::kCampaignLevels[idx].pak));
           break;
         }
-        case 12:
+        case 13:
 #if defined(__SWITCH__)
           rex::cvar::SaveConfig("sdmc:/switch/timeshift/timeshift.toml");
 #else

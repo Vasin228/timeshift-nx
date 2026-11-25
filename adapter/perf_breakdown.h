@@ -70,6 +70,7 @@ inline std::atomic<uint64_t> g_role_cpu_ticks[6]{};
 inline std::atomic<uint64_t> g_handover_counts[6]{};
 inline thread_local int t_thread_role = 5;
 void AccountThreadCpuTicks(int role);
+void FlushGuestProfilerWindow();
 inline std::atomic<uint32_t> g_hud_fps_x10{0};
 inline std::atomic<uint32_t> g_hud_min_fps_x10{0};
 inline std::atomic<uint32_t> g_hud_frame_ms_x10{0};

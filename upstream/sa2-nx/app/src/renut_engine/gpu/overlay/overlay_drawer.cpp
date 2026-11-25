@@ -42,6 +42,7 @@ REXCVAR_DECLARE(int32_t, renut_far_plane_m);
 REXCVAR_DECLARE(std::string, renut_fps_cap);
 REXCVAR_DECLARE(std::string, renut_resolution);
 REXCVAR_DECLARE(bool, renut_fxaa);
+REXCVAR_DECLARE(std::string, renut_fsr);
 REXCVAR_DECLARE(std::string, renut_anisotropic_filtering);
 REXCVAR_DECLARE(bool, renut_skip_orig_d3d);
 REXCVAR_DECLARE(bool, renut_deko3d_zcull);
@@ -403,7 +404,9 @@ void DrawFpsHudLocked(plume::RenderCommandList *cmd, plume::RenderFramebuffer *f
 #if defined(__SWITCH__)
       docked = (appletGetOperationMode() == AppletOperationMode_Console);
 #endif
-      std::snprintf(res_buf, sizeof(res_buf), docked ? "AUTO 720P" : "AUTO 480P");
+      std::snprintf(res_buf, sizeof(res_buf), docked ? "AUTO 720P" : "AUTO 540P");
+    } else if (res_cfg == "480p") {
+      std::snprintf(res_buf, sizeof(res_buf), "540P");
     } else {
       for (size_t i = 0; i < res_cfg.size() && i < 15; ++i)
         res_buf[i] = (res_cfg[i] >= 'a' && res_cfg[i] <= 'z') ? char(res_cfg[i] - 32) : res_cfg[i];
@@ -415,13 +418,19 @@ void DrawFpsHudLocked(plume::RenderCommandList *cmd, plume::RenderFramebuffer *f
     const uint32_t col_val = PackRGBA(120, 210, 255, 255);
     const uint32_t col_dim = PackRGBA(175, 185, 200, 255);
     const bool fxaa_on = REXCVAR_GET(renut_fxaa);
+    const std::string &fsr_cfg = REXCVAR_GET(renut_fsr);
+    char fsr_upper[8] = {};
+    for (size_t i = 0; i < fsr_cfg.size() && i < 7; ++i)
+      fsr_upper[i] = (fsr_cfg[i] >= 'a' && fsr_cfg[i] <= 'z') ? char(fsr_cfg[i] - 32) : fsr_cfg[i];
+    const bool fsr_on = (fsr_cfg != "Off" && !fsr_cfg.empty());
     const bool cap_off = (fps_cap == "Off");
     const bool rev_on = REXCVAR_GET(renut_audio_reverb);
-    const Row rows[13] = {
+    const Row rows[14] = {
         {"FPS HUD", REXCVAR_GET(renut_fps_overlay) ? "ON" : "OFF", REXCVAR_GET(renut_fps_overlay) ? col_on : col_off},
         {"FPS LOCK", cap_upper[0] ? cap_upper : "30", cap_off ? col_off : col_on},
         {"RESOLUTION", res_buf[0] ? res_buf : "AUTO", col_val},
         {"FXAA", fxaa_on ? "ON" : "OFF", fxaa_on ? col_on : col_off},
+        {"FSR 1", fsr_upper[0] ? fsr_upper : "MED", fsr_on ? col_on : col_off},
         {"SHADOWS 1024", REXCVAR_GET(renut_skip_shadows) ? "OFF" : "ON", REXCVAR_GET(renut_skip_shadows) ? col_off : col_on},
         {"DRAW DIST", dist_buf, col_val},
         {"ANISO FILTER", af_upper[0] ? af_upper : "2X", col_val},
@@ -437,7 +446,7 @@ void DrawFpsHudLocked(plume::RenderCommandList *cmd, plume::RenderFramebuffer *f
     const float pad_x = 12.0f * scale;
     const float pad_y = 10.0f * scale;
     const float box_w = 240.0f * scale;
-    const float box_h = pad_y * 2.0f + row_h * 15.2f;
+    const float box_h = pad_y * 2.0f + row_h * 16.2f;
     const float box_x = std::floor((float(width) - box_w) * 0.5f);
     const float box_y = std::floor((float(height) - box_h) * 0.5f);
 
@@ -452,7 +461,7 @@ void DrawFpsHudLocked(plume::RenderCommandList *cmd, plume::RenderFramebuffer *f
     const char *title = "RENUT GRAPHICS MENU";
     emit_str_at(box_x + pad_x, box_y + pad_y, title, std::strlen(title), accent);
 
-    for (int i = 0; i < 13; ++i) {
+    for (int i = 0; i < 14; ++i) {
       const float ry = box_y + pad_y + float(i + 1) * row_h + 2.0f * scale;
       if (i == cursor)
         AppendQuad(bg_verts, box_x + 4.0f * scale, ry - 2.0f * scale, box_x + box_w - 4.0f * scale,

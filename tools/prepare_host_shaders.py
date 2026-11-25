@@ -20,7 +20,7 @@ cross = ROOT / 'build/spirv-cross/spirv-cross'
 uam = ROOT / 'build/uam-host/uam'
 env = dict(os.environ, LD_LIBRARY_PATH=str(dxc.parent.parent / 'lib'))
 stages = {'vs': ('vert', 0), 'gs': ('geom', 3), 'ps': ('frag', 4), 'cs': ('comp', 5)}
-stems = ['overlay_vs', 'overlay_ps', 'present_vs', 'present_ps', 'depth_resolve_ps',
+stems = ['overlay_vs', 'overlay_ps', 'present_vs', 'present_ps', 'fsr_easu_ps', 'depth_resolve_ps',
          'depth_resolve_ms_ps', 'texture_mip_ps', 'resolve_copy_ps', 'rectangle_list_gs',
          'point_sprite_gs', 'stream_convert_cs', 'target_readback_cs']
 report = []

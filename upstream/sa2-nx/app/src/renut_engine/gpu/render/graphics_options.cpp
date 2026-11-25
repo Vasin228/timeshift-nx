@@ -126,6 +126,18 @@ void LatchGraphicsOptionsLocked() {
 
 RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolution) {
 #if defined(TIMESHIFT_RECOMP)
+  if (resolution.Factor() < 1.0f) {
+    const u32 width = d3d::SurfaceWidth(desc.Size);
+    const u32 height = d3d::SurfaceHeight(desc.Size);
+    if (d3d::IsDepthFormat(desc.Format) && width == height)
+      return {};  // Keep square shadow depth maps >= 1x so 1/guestSize PCF taps never Moire at 480p.
+    const u32 desc_msaa = (u32(desc.SurfaceInfo) >> 16) & 3u;
+    const u32 msaa_x = (desc_msaa >= 2u) ? 2u : 1u;
+    const u32 msaa_y = (desc_msaa >= 1u) ? 2u : 1u;
+    if (!d3d::IsDepthFormat(desc.Format) && (width * msaa_x) * 2 <= GuestScreenWidth() &&
+        (height * msaa_y) * 2 <= kGuestScreenHeight)
+      return {};  // Keep <= 640x360 non-MSAA-aliased half-res/post targets at 1x while preserving 640x360 4xMSAA -> 1280x720 aliases.
+  }
   return resolution;  // N&B's surface-size/EDRAM classifiers are not title evidence.
 #else
   if ((u32(desc.SurfaceInfo) >> 16) & 3)

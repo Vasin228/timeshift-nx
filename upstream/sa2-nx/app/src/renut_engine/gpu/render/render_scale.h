@@ -20,8 +20,8 @@ namespace renut::gpu {
 // (renutTextureScale in shader_common.h).
 struct RenderScale {
   static constexpr uint32_t kCount = 8;
-  static constexpr uint32_t kNumerators[kCount] = {1, 2, 3, 2, 3, 4, 6, 4};
-  static constexpr uint32_t kDenominators[kCount] = {1, 3, 2, 1, 1, 1, 1, 3};
+  static constexpr uint32_t kNumerators[kCount] = {1, 3, 3, 2, 3, 4, 6, 4};
+  static constexpr uint32_t kDenominators[kCount] = {1, 4, 2, 1, 1, 1, 1, 3};
 
   uint32_t code = 0;
 

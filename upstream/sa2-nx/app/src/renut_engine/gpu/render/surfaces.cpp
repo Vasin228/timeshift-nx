@@ -42,9 +42,9 @@ REXCVAR_DEFINE_BOOL(sa2_renut_dock_resolution, true, "SA2/Renderer",
 
 #if defined(TIMESHIFT_RECOMP)
 REXCVAR_DEFINE_STRING(renut_resolution, "Auto", "Nuts&Bolts/Graphics",
-                      "Internal render resolution: Auto (720p docked, 480p handheld), 480p, 720p, "
+                      "Internal render resolution: Auto (720p docked, 540p handheld), 540p, 720p, "
                       "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
-    .allowed({"Auto", "480p", "720p", "1080p", "1440p", "4K"});
+    .allowed({"Auto", "480p", "540p", "720p", "1080p", "1440p", "4K"});
 #else
 REXCVAR_DEFINE_STRING(renut_resolution, "720p", "Nuts&Bolts/Graphics",
                       "Internal render resolution, by its height: 480p, 720p (the game's own), "
@@ -302,7 +302,7 @@ void LatchResolutionScaleLocked() {
   if (resolution == "Auto" || resolution.empty()) {
     scale.code = docked ? 0u : 1u;
   } else {
-    scale.code = resolution == "480p"    ? 1u
+    scale.code = (resolution == "540p" || resolution == "480p") ? 1u
                : resolution == "1080p" ? 2u
                : resolution == "1440p" ? 3u
                : resolution == "4K"    ? 4u

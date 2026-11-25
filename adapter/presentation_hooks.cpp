@@ -21,18 +21,26 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
+#include <rex/system/xthread.h>
 #include <o1heap.h>
 #include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
+#include <rex/ppc/func.h>
 #if defined(__SWITCH__)
+#include <pthread.h>
 #include <switch.h>
+#endif
+#if defined(__aarch64__)
+#include <arm_neon.h>
 #endif
 
 #if defined(__SWITCH__)
@@ -42,12 +50,19 @@ REXCVAR_DEFINE_BOOL(renut_audio_reverb, false, "Renut",
 REXCVAR_DEFINE_BOOL(renut_audio_reverb, true, "Renut",
                     "Enable FMOD software SFX reverb DSP");
 #endif
+REXCVAR_DEFINE_BOOL(renut_guest_profiler, false, "Renut",
+                    "Enable 268Hz guest hotspot sampler on Core 2 (Stage 8 profiling)");
 
 REX_EXTERN(__imp__sub_8264B1A8);
 REX_EXTERN(__imp__sub_8264AD00);
 REX_EXTERN(__imp__sub_8264DCF0);
+REX_EXTERN(__imp__sub_82144DA0);
+REX_EXTERN(__imp__sub_82144E08);
 REX_EXTERN(__imp__sub_82145740);
 REX_EXTERN(__imp__sub_821455E8);
+REX_EXTERN(__imp__sub_82228410);
+REX_EXTERN(__imp__sub_82422970);
+REX_EXTERN(__imp__sub_82424238);
 REX_EXTERN(__imp__sub_828172A8);
 REX_EXTERN(__imp__sub_8281AE38);
 REX_EXTERN(__imp__sub_8287F678);
@@ -63,10 +78,38 @@ REX_EXTERN(__imp__sub_828DA770);
 REX_EXTERN(__imp__sub_828DC538);
 REX_EXTERN(__imp__sub_828DEE18);
 REX_EXTERN(__imp__sub_828DFCC0);
+REX_EXTERN(__imp__sub_829303D0);
 REX_EXTERN(__imp__sub_82B08E80);
+REX_EXTERN(__imp__sub_8218CA80);
+REX_EXTERN(__imp__sub_821F4168);
+REX_EXTERN(__imp__sub_821FD330);
+REX_EXTERN(__imp__sub_82290748);
+REX_EXTERN(__imp__sub_82401388);
+REX_EXTERN(__imp__sub_82401D20);
+REX_EXTERN(__imp__sub_82430090);
+REX_EXTERN(__imp__sub_82436068);
+REX_EXTERN(sub_821E1210);
+REX_EXTERN(sub_821F0168);
+REX_EXTERN(sub_8228ECF8);
+REX_EXTERN(sub_8228F2E0);
+REX_EXTERN(sub_8228FF80);
+REX_EXTERN(sub_822FE0A0);
+REX_EXTERN(sub_82401888);
 
 #if defined(__SWITCH__)
 extern "C" {
+struct RexWatchdogThreadSnap {
+  uint32_t tid;
+  uint32_t start;
+  uint32_t lr;
+  uint32_t ctr;
+  uint32_t r1;
+  uint32_t r3;
+  uint8_t is_guest;
+  uint8_t is_running;
+  uint16_t pad;
+};
+int rex_kernel_snapshot_threads_trylock(RexWatchdogThreadSnap* out, int max_count);
 void rex_watchdog_note_swap(uint64_t swaps);
 void rex_watchdog_set_heap_owner(uint32_t role_plus_one);
 void rex_watchdog_set_heap_op(uint32_t op);
@@ -189,6 +232,12 @@ inline rex::memory::BaseHeap* GetVirtualHeap64K() {
 }
 
 uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
+#if defined(__SWITCH__)
+  static thread_local uint32_t s_sim_alloc_probe = 0;
+  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_alloc_probe & 127u) == 0u) {
+    timeshift::telemetry::AccountThreadCpuTicks(0);
+  }
+#endif
   SetHeapOp(1u);
   ++g_alloc_cnt;
   if (req_size > kMaxValidReq) return 0u;
@@ -379,7 +428,257 @@ void LogWindowSummary() {
 
 }  // namespace o1_guest_heap
 
+#if defined(__SWITCH__)
+namespace guest_profiler {
+
+inline constexpr uint32_t kGuestCodeBegin = 0x82140000u;
+inline constexpr uint32_t kGuestCodeEnd = 0x82B20000u;
+
+inline bool IsGuestCodeAddr(uint32_t va) noexcept {
+  return va >= kGuestCodeBegin && va < kGuestCodeEnd;
+}
+
+inline uint32_t SafeGuestThreadId() noexcept {
+  auto* thr = rex::system::XThread::GetCurrentThread();
+  return thr ? thr->thread_id() : 0u;
+}
+
+std::atomic<uint32_t> g_tid_sim{0};
+std::atomic<uint32_t> g_tid_draw{0};
+std::atomic<uint32_t> g_tid_fmod_mixer{0};
+
+struct ProfSlot {
+  uint32_t key;
+  uint32_t count;
+  uint32_t last_ctr;
+};
+
+template <size_t Capacity>
+struct AddrHist {
+  static_assert((Capacity & (Capacity - 1u)) == 0u);
+  ProfSlot slots[Capacity]{};
+  uint32_t overflow = 0u;
+
+  void Clear() noexcept {
+    std::memset(slots, 0, sizeof(slots));
+    overflow = 0u;
+  }
+
+  void Add(uint32_t key, uint32_t code_ctr) noexcept {
+    if (key == 0u) return;
+    size_t idx = (size_t(key) * 2654435761u) & (Capacity - 1u);
+    for (size_t step = 0; step < Capacity; ++step) {
+      ProfSlot& s = slots[idx];
+      if (s.key == key) {
+        ++s.count;
+        if (code_ctr != 0u) s.last_ctr = code_ctr;
+        return;
+      }
+      if (s.key == 0u) {
+        s.key = key;
+        s.count = 1u;
+        s.last_ctr = code_ctr;
+        return;
+      }
+      idx = (idx + 1u) & (Capacity - 1u);
+    }
+    ++overflow;
+  }
+
+  template <size_t TopN>
+  size_t ExtractTop(ProfSlot (&out)[TopN]) const noexcept {
+    size_t n = 0u;
+    for (size_t i = 0; i < Capacity; ++i) {
+      const ProfSlot& s = slots[i];
+      if (s.key == 0u || s.count == 0u) continue;
+      if (n == TopN && s.count <= out[TopN - 1u].count) continue;
+      size_t pos = (n < TopN) ? n++ : (TopN - 1u);
+      while (pos > 0u && out[pos - 1u].count < s.count) {
+        out[pos] = out[pos - 1u];
+        --pos;
+      }
+      out[pos] = s;
+    }
+    return n;
+  }
+};
+
+struct WindowData {
+  AddrHist<1024> sim_lr;
+  AddrHist<512> sim_ctr;
+  AddrHist<512> draw_lr;
+  AddrHist<256> aud_lr;
+  uint64_t ticks = 0u;
+  uint64_t gcr_busy = 0u;
+  uint64_t sim_n = 0u;
+  uint64_t draw_n = 0u;
+  uint64_t aud_n = 0u;
+  uint64_t wrk_busy = 0u;
+
+  void Clear() noexcept {
+    sim_lr.Clear();
+    sim_ctr.Clear();
+    draw_lr.Clear();
+    aud_lr.Clear();
+    ticks = 0u;
+    gcr_busy = 0u;
+    sim_n = 0u;
+    draw_n = 0u;
+    aud_n = 0u;
+    wrk_busy = 0u;
+  }
+};
+
+Mutex g_prof_mtx = 0;
+WindowData g_live{};
+
+void* SamplerThreadMain(void*) {
+  PinCurrentThread(2, 0x4u, 0x2D);
+  REXLOG_INFO("[prof] 268Hz guest hotspot sampler started on core={} prio=0x2D",
+              svcGetCurrentProcessorNumber());
+  while (true) {
+    svcSleepThread(3733000ULL);
+    RexWatchdogThreadSnap snap[32]{};
+    const int n = rex_kernel_snapshot_threads_trylock(snap, 32);
+    if (n < 0) {
+      mutexLock(&g_prof_mtx);
+      ++g_live.ticks;
+      ++g_live.gcr_busy;
+      mutexUnlock(&g_prof_mtx);
+      continue;
+    }
+
+    const uint32_t tid_sim = g_tid_sim.load(std::memory_order_relaxed);
+    const uint32_t tid_draw = g_tid_draw.load(std::memory_order_relaxed);
+    const uint32_t tid_aud = g_tid_fmod_mixer.load(std::memory_order_relaxed);
+
+    uint32_t sim_lr = 0u;
+    uint32_t sim_ctr = 0u;
+    uint32_t draw_lr = 0u;
+    uint32_t aud_lr = 0u;
+    uint32_t wrk_busy = 0u;
+
+    for (int i = 0; i < n; ++i) {
+      const RexWatchdogThreadSnap& s = snap[i];
+      if (!s.is_guest || !s.is_running) continue;
+      if ((tid_sim != 0u && s.tid == tid_sim) || (tid_sim == 0u && s.start == 0x8280F810u)) {
+        sim_lr = s.lr;
+        if (IsGuestCodeAddr(s.ctr)) sim_ctr = s.ctr;
+      } else if (tid_draw != 0u && s.tid == tid_draw) {
+        draw_lr = s.lr;
+      } else if (tid_aud != 0u && s.tid == tid_aud) {
+        aud_lr = s.lr;
+      } else if (s.start == 0x82264A98u && s.lr != 0x82810478u) {
+        ++wrk_busy;
+      }
+    }
+
+    mutexLock(&g_prof_mtx);
+    ++g_live.ticks;
+    if (sim_lr != 0u) {
+      g_live.sim_lr.Add(sim_lr, sim_ctr);
+      ++g_live.sim_n;
+      if (sim_ctr != 0u) g_live.sim_ctr.Add(sim_ctr, 0u);
+    }
+    if (draw_lr != 0u) {
+      g_live.draw_lr.Add(draw_lr, 0u);
+      ++g_live.draw_n;
+    }
+    if (aud_lr != 0u) {
+      g_live.aud_lr.Add(aud_lr, 0u);
+      ++g_live.aud_n;
+    }
+    g_live.wrk_busy += wrk_busy;
+    mutexUnlock(&g_prof_mtx);
+  }
+  return nullptr;
+}
+
+void EnsureStarted() {
+  static const bool enabled = REXCVAR_GET(renut_guest_profiler);
+  if (!enabled) return;
+  static std::once_flag once;
+  std::call_once(once, [] {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 64u * 1024u);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t thr{};
+    const int rc = pthread_create(&thr, &attr, SamplerThreadMain, nullptr);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+      REXLOG_WARN("[prof] pthread_create failed (rc={})", rc);
+    }
+  });
+}
+
+template <size_t N>
+void LogTopSlots(const char* tag, const ProfSlot (&top)[N], size_t begin, size_t count,
+                 uint64_t denom, bool with_ctr) {
+  if (begin >= count || denom == 0u) return;
+  char buf[512];
+  size_t pos = 0u;
+  const size_t end = std::min(begin + 8u, count);
+  for (size_t i = begin; i < end && pos + 40u < sizeof(buf); ++i) {
+    const double pct = (100.0 * double(top[i].count)) / double(denom);
+    int wrote = 0;
+    if (with_ctr && top[i].last_ctr != 0u) {
+      wrote = std::snprintf(buf + pos, sizeof(buf) - pos, "%s0x%08X:%u(%.1f%%)[c=0x%08X]",
+                            (i == begin) ? "" : " ", top[i].key, top[i].count, pct, top[i].last_ctr);
+    } else {
+      wrote = std::snprintf(buf + pos, sizeof(buf) - pos, "%s0x%08X:%u(%.1f%%)",
+                            (i == begin) ? "" : " ", top[i].key, top[i].count, pct);
+    }
+    if (wrote > 0) {
+      const size_t avail = sizeof(buf) - 1u - pos;
+      pos += (size_t(wrote) < avail) ? size_t(wrote) : avail;
+    }
+  }
+  if (pos > 0u) {
+    REXLOG_INFO("{} {}", tag, buf);
+  }
+}
+
+}  // namespace guest_profiler
+#endif
+
 }  // namespace
+
+namespace timeshift::telemetry {
+void FlushGuestProfilerWindow() {
+#if defined(__SWITCH__)
+  if (!REXCVAR_GET(renut_guest_profiler)) return;
+  static guest_profiler::WindowData s_snap{};
+  mutexLock(&guest_profiler::g_prof_mtx);
+  s_snap = guest_profiler::g_live;
+  guest_profiler::g_live.Clear();
+  mutexUnlock(&guest_profiler::g_prof_mtx);
+  if (s_snap.ticks == 0u) return;
+
+  REXLOG_INFO(
+      "[prof-meta] 300f: ticks={} gcr_busy={} sim_n={} draw_n={} aud_n={} wrk_busy={} ovf={}/{}/{}/{}",
+      s_snap.ticks, s_snap.gcr_busy, s_snap.sim_n, s_snap.draw_n, s_snap.aud_n, s_snap.wrk_busy,
+      s_snap.sim_lr.overflow, s_snap.sim_ctr.overflow, s_snap.draw_lr.overflow, s_snap.aud_lr.overflow);
+
+  guest_profiler::ProfSlot sim_top[16]{};
+  const size_t sim_cnt = s_snap.sim_lr.ExtractTop(sim_top);
+  guest_profiler::LogTopSlots("[prof-sim-1]", sim_top, 0u, sim_cnt, s_snap.sim_n, true);
+  guest_profiler::LogTopSlots("[prof-sim-2]", sim_top, 8u, sim_cnt, s_snap.sim_n, true);
+
+  guest_profiler::ProfSlot ctr_top[8]{};
+  const size_t ctr_cnt = s_snap.sim_ctr.ExtractTop(ctr_top);
+  guest_profiler::LogTopSlots("[prof-sim-ctr]", ctr_top, 0u, ctr_cnt, s_snap.sim_n, false);
+
+  guest_profiler::ProfSlot draw_top[8]{};
+  const size_t draw_cnt = s_snap.draw_lr.ExtractTop(draw_top);
+  guest_profiler::LogTopSlots("[prof-draw]", draw_top, 0u, draw_cnt, s_snap.draw_n, false);
+
+  guest_profiler::ProfSlot aud_top[6]{};
+  const size_t aud_cnt = s_snap.aud_lr.ExtractTop(aud_top);
+  guest_profiler::LogTopSlots("[prof-aud]", aud_top, 0u, aud_cnt, s_snap.aud_n, false);
+#endif
+}
+}  // namespace timeshift::telemetry
 
 namespace timeshift::renderer {
 namespace {
@@ -387,7 +686,7 @@ namespace {
 using namespace d3d6274::layout;
 
 inline constexpr uint32_t kPresentRetiredCount = 16552;
-inline constexpr uint32_t kMaxFramesInFlight = 2;
+inline constexpr uint32_t kMaxFramesInFlight = 1;
 
 uint32_t Word(std::span<const uint8_t> p, uint32_t at) {
   if (uint64_t(at) + 4 > p.size()) throw std::out_of_range("presentation guest word");
@@ -442,7 +741,13 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
       ~WatchdogSwapStageGuard() { rex_watchdog_set_draw_stage(0u); }
     } wd_swap_guard;
     rex_watchdog_set_draw_stage(1u);
-    timeshift::telemetry::t_thread_role = 1;
+    if (timeshift::telemetry::t_thread_role == 5) {
+      timeshift::telemetry::t_thread_role = 1;
+    }
+    if (timeshift::telemetry::t_thread_role == 1 && guest_profiler::g_tid_draw.load(std::memory_order_relaxed) == 0u) {
+      guest_profiler::g_tid_draw.store(guest_profiler::SafeGuestThreadId(), std::memory_order_relaxed);
+    }
+    guest_profiler::EnsureStarted();
     if (!g_thread_core_pinned) {
       Result rc_prio = 0;
       int32_t actual_core = -1;
@@ -451,7 +756,7 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
       REXLOG_INFO("[cpu-pin] swap thread pinned ideal=0 mask=0x{:X} (allowed=0x{:X}) cur_core={} rc=0x{:X} prio=0x24 rc=0x{:X}",
                   applied_mask, QueryAllowedCoreMask(), actual_core, uint32_t(rc_mask), uint32_t(rc_prio));
     }
-    timeshift::telemetry::AccountThreadCpuTicks(1);
+    timeshift::telemetry::AccountThreadCpuTicks(timeshift::telemetry::t_thread_role);
     timeshift::telemetry::g_game_core_mask.fetch_or(1u << svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
 #endif
 
@@ -669,12 +974,14 @@ REX_EXTERN(sub_82145740) {
     ideal_core = 1;
     core_mask = 0x3u;
     prio = 0x24;
+    guest_profiler::g_tid_sim.store(guest_profiler::SafeGuestThreadId(), std::memory_order_relaxed);
   } else if (caller_lr == 0x82264AC8u && guest_hw == 3u) {
     // Dedicated Saber3D 3D scene & draw submission thread (TID 09): Core 0 primary, spillover Core 1.
     role = 1;
     ideal_core = 0;
     core_mask = 0x3u;
     prio = 0x24;
+    guest_profiler::g_tid_draw.store(guest_profiler::SafeGuestThreadId(), std::memory_order_relaxed);
   } else if (caller_lr == 0x82264AC8u) {
     // Parallel Saber3D workers: prefer Core 1 headroom, allow 0..2, below main/draw/render/audio.
     role = 2;
@@ -848,6 +1155,9 @@ REX_EXTERN(sub_8287F678) {
       }
     }
     const bool is_fmod_mixer = (std::strncmp(name, "FMOD mixer", 10) == 0);
+    if (is_fmod_mixer) {
+      guest_profiler::g_tid_fmod_mixer.store(guest_profiler::SafeGuestThreadId(), std::memory_order_relaxed);
+    }
     const int32_t ideal_core = is_fmod_mixer ? 2 : 1;
     const uint32_t core_mask = is_fmod_mixer ? 0x4u : 0x6u;
     const int32_t prio = is_fmod_mixer ? 0x22 : 0x26;
@@ -1717,4 +2027,1072 @@ REX_EXTERN(sub_828E3D10) {
 
 REX_EXTERN(sub_828E8420) {
   ctx.r3.u64 = std::isfinite(ctx.f1.f64) ? 1ull : 0ull;
+}
+
+namespace {
+
+inline void StoreBeU32(uint8_t* p, uint32_t v) noexcept {
+  const uint32_t be = __builtin_bswap32(v);
+  std::memcpy(p, &be, sizeof(be));
+}
+
+inline uint16_t LoadBeU16(const uint8_t* p) noexcept {
+  uint16_t raw = 0;
+  std::memcpy(&raw, p, sizeof(raw));
+  return __builtin_bswap16(raw);
+}
+
+inline void StoreBeU16(uint8_t* p, uint16_t v) noexcept {
+  const uint16_t be = __builtin_bswap16(v);
+  std::memcpy(p, &be, sizeof(be));
+}
+
+inline int32_t LoadBeS32(const uint8_t* p) noexcept {
+  return static_cast<int32_t>(LoadBeU32(p));
+}
+
+inline uint8_t* GuestWritePtr(uint8_t* base, uint32_t ea) noexcept {
+  return base + ea + CrtPhysOff(ea);
+}
+
+inline uint32_t GuestKThreadBe() noexcept {
+  static thread_local uint32_t s_kthread_be = 0u;
+  if (s_kthread_be == 0u) [[unlikely]] {
+    if (auto* thr = rex::system::XThread::GetCurrentThread()) {
+      s_kthread_be = __builtin_bswap32(thr->guest_object());
+    }
+  }
+  return s_kthread_be;
+}
+
+inline bool TryFastEnterSaberCs(uint8_t* base, uint32_t cs_va) noexcept {
+  if (cs_va == 0u) return false;
+  uint8_t* p = base + cs_va + CrtPhysOff(cs_va);
+  if (p[32] == 0u || p[0] == 0u) return false;
+  if (p[33] != 0xFFu) return true;
+
+  const uint32_t cur_be = GuestKThreadBe();
+  if (cur_be == 0u) return false;
+
+  auto* lock_ptr = reinterpret_cast<int32_t*>(p + 16u);
+  auto* rec_ptr = reinterpret_cast<uint32_t*>(p + 20u);
+  auto* own_ptr = reinterpret_cast<uint32_t*>(p + 24u);
+  auto* depth_ptr = reinterpret_cast<uint32_t*>(p + 36u);
+
+  if (__atomic_load_n(own_ptr, __ATOMIC_RELAXED) == cur_be) {
+    __atomic_fetch_add(lock_ptr, 1, __ATOMIC_RELAXED);
+    const int32_t rec = static_cast<int32_t>(__builtin_bswap32(*rec_ptr)) + 1;
+    *rec_ptr = __builtin_bswap32(static_cast<uint32_t>(rec));
+    *depth_ptr = __builtin_bswap32(__builtin_bswap32(*depth_ptr) + 1u);
+    return true;
+  }
+
+  constexpr uint32_t kBeOne = __builtin_bswap32(1u);
+  for (int spin = 0; spin < 16; ++spin) {
+    int32_t expected = -1;
+    if (__atomic_compare_exchange_n(lock_ptr, &expected, 0, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+      __atomic_store_n(own_ptr, cur_be, __ATOMIC_RELAXED);
+      *rec_ptr = kBeOne;
+      *depth_ptr = __builtin_bswap32(__builtin_bswap32(*depth_ptr) + 1u);
+      return true;
+    }
+#if defined(__aarch64__)
+    if (spin < 15) __asm__ __volatile__("yield" ::: "memory");
+#endif
+  }
+  return false;
+}
+
+inline bool TryFastLeaveSaberCs(uint8_t* base, uint32_t cs_va) noexcept {
+  if (cs_va == 0u) return false;
+  uint8_t* p = base + cs_va + CrtPhysOff(cs_va);
+  if (p[33] != 0xFFu) return true;
+
+  const uint32_t cur_be = GuestKThreadBe();
+  if (cur_be == 0u) return false;
+
+  auto* lock_ptr = reinterpret_cast<int32_t*>(p + 16u);
+  auto* rec_ptr = reinterpret_cast<uint32_t*>(p + 20u);
+  auto* own_ptr = reinterpret_cast<uint32_t*>(p + 24u);
+  auto* depth_ptr = reinterpret_cast<uint32_t*>(p + 36u);
+
+  if (__atomic_load_n(own_ptr, __ATOMIC_RELAXED) != cur_be) return false;
+  const int32_t rec = static_cast<int32_t>(__builtin_bswap32(*rec_ptr));
+  if (rec <= 0) return false;
+
+  if (rec > 1) {
+    *rec_ptr = __builtin_bswap32(static_cast<uint32_t>(rec - 1));
+    *depth_ptr = __builtin_bswap32(__builtin_bswap32(*depth_ptr) - 1u);
+    __atomic_fetch_sub(lock_ptr, 1, __ATOMIC_RELAXED);
+    return true;
+  }
+
+  if (__atomic_load_n(lock_ptr, __ATOMIC_RELAXED) != 0) return false;
+  const uint32_t old_depth = __builtin_bswap32(*depth_ptr);
+  *depth_ptr = __builtin_bswap32(old_depth - 1u);
+  *rec_ptr = 0u;
+  __atomic_store_n(own_ptr, 0u, __ATOMIC_RELAXED);
+
+  int32_t expected = 0;
+  if (__atomic_compare_exchange_n(lock_ptr, &expected, -1, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+    return true;
+  }
+
+  // Waiter arrived concurrently; restore pre-leave state for __imp__sub_82144E08.
+  __atomic_store_n(own_ptr, cur_be, __ATOMIC_RELAXED);
+  *rec_ptr = __builtin_bswap32(1u);
+  *depth_ptr = __builtin_bswap32(old_depth);
+  return false;
+}
+
+inline void FastEnterSaberCsOrImp(PPCContext& ctx, uint8_t* base, uint32_t cs_va) {
+  if (!TryFastEnterSaberCs(base, cs_va)) {
+    ctx.r3.u64 = cs_va;
+    ctx.r4.u64 = 0u;
+    ctx.r5.u64 = 0u;
+    __imp__sub_82144DA0(ctx, base);
+  }
+}
+
+inline void FastLeaveSaberCsOrImp(PPCContext& ctx, uint8_t* base, uint32_t cs_va) {
+  if (!TryFastLeaveSaberCs(base, cs_va)) {
+    ctx.r3.u64 = cs_va;
+    ctx.r4.u64 = 0u;
+    ctx.r5.u64 = 0u;
+    __imp__sub_82144E08(ctx, base);
+  }
+}
+
+#if defined(__aarch64__)
+inline float32x4_t LoadBeF32x4(const uint8_t* p) noexcept {
+  return vreinterpretq_f32_u8(vrev32q_u8(vld1q_u8(p)));
+}
+
+inline void StoreBeF32x4(uint8_t* p, float32x4_t v) noexcept {
+  vst1q_u8(p, vrev32q_u8(vreinterpretq_u8_f32(v)));
+}
+
+inline float Dot3Be(float32x4_t a, float dx, float dy, float dz) noexcept {
+  return vgetq_lane_f32(a, 0) * dx + vgetq_lane_f32(a, 1) * dy + vgetq_lane_f32(a, 2) * dz;
+}
+#endif
+
+}  // namespace
+
+// Native Saber critical section fast-path + GetPos (Stage 8B)
+REX_EXTERN(sub_82144DA0) {
+#if defined(__SWITCH__)
+  static thread_local uint32_t s_sim_cs_probe = 0;
+  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_cs_probe & 4095u) == 0u) {
+    timeshift::telemetry::AccountThreadCpuTicks(0);
+  }
+#endif
+  if (!TryFastEnterSaberCs(base, ctx.r3.u32)) {
+    __imp__sub_82144DA0(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_82144E08) {
+  if (!TryFastLeaveSaberCs(base, ctx.r3.u32)) {
+    __imp__sub_82144E08(ctx, base);
+  }
+}
+
+REX_EXTERN(sub_82228410) {
+  const uint32_t obj_va = ctx.r3.u32;
+  const uint32_t out_va = ctx.r4.u32;
+  if (obj_va == 0u || out_va == 0u) {
+    __imp__sub_82228410(ctx, base);
+    return;
+  }
+  const uint32_t cs_va = obj_va + 488u;
+  if (!TryFastEnterSaberCs(base, cs_va)) {
+    ctx.r3.u64 = cs_va;
+    __imp__sub_82144DA0(ctx, base);
+    ctx.r3.u64 = obj_va;
+  }
+  const uint32_t pos_va = obj_va + 104u;
+  std::memmove(base + out_va + CrtPhysOff(out_va), GuestReadPtr(base, pos_va), 12u);
+  if (!TryFastLeaveSaberCs(base, cs_va)) {
+    ctx.r3.u64 = cs_va;
+    __imp__sub_82144E08(ctx, base);
+    ctx.r3.u64 = obj_va;
+  }
+}
+
+// Native NEON XMMatrixMultiply (out[r5] = A[r3] * B[r4])
+REX_EXTERN(sub_82424238) {
+  const uint32_t a_va = ctx.r3.u32;
+  const uint32_t b_va = ctx.r4.u32;
+  const uint32_t out_va = ctx.r5.u32;
+  if (!a_va || !b_va || !out_va) {
+    __imp__sub_82424238(ctx, base);
+    return;
+  }
+  const uint8_t* a_ptr = GuestReadPtr(base, a_va);
+  const uint8_t* b_ptr = GuestReadPtr(base, b_va);
+  uint8_t* out_ptr = base + out_va + CrtPhysOff(out_va);
+#if defined(__aarch64__)
+  const float32x4_t b0 = LoadBeF32x4(b_ptr + 0u);
+  const float32x4_t b1 = LoadBeF32x4(b_ptr + 16u);
+  const float32x4_t b2 = LoadBeF32x4(b_ptr + 32u);
+  const float32x4_t b3 = LoadBeF32x4(b_ptr + 48u);
+  const float32x4_t a0 = LoadBeF32x4(a_ptr + 0u);
+  const float32x4_t a1 = LoadBeF32x4(a_ptr + 16u);
+  const float32x4_t a2 = LoadBeF32x4(a_ptr + 32u);
+  const float32x4_t a3 = LoadBeF32x4(a_ptr + 48u);
+  auto mul_row = [&](float32x4_t a) noexcept -> float32x4_t {
+    float32x4_t o = vmulq_laneq_f32(b0, a, 0);
+    o = vfmaq_laneq_f32(o, b1, a, 1);
+    o = vfmaq_laneq_f32(o, b2, a, 2);
+    return vfmaq_laneq_f32(o, b3, a, 3);
+  };
+  const float32x4_t r0 = mul_row(a0);
+  const float32x4_t r1 = mul_row(a1);
+  const float32x4_t r2 = mul_row(a2);
+  const float32x4_t r3 = mul_row(a3);
+  StoreBeF32x4(out_ptr + 0u, r0);
+  StoreBeF32x4(out_ptr + 16u, r1);
+  StoreBeF32x4(out_ptr + 32u, r2);
+  StoreBeF32x4(out_ptr + 48u, r3);
+#else
+  float a[4][4], b[4][4];
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      a[i][j] = LoadBeF32(a_ptr + size_t(i * 4 + j) * 4u);
+      b[i][j] = LoadBeF32(b_ptr + size_t(i * 4 + j) * 4u);
+    }
+  }
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      StoreBeF32(out_ptr + size_t(i * 4 + j) * 4u,
+                 a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j]);
+    }
+  }
+#endif
+}
+
+// Native NEON hkpTriangleShape::getSupportingVertex (shape[r3], dir[r4], out[r5])
+REX_EXTERN(sub_829303D0) {
+  const uint32_t shape_va = ctx.r3.u32;
+  const uint32_t dir_va = ctx.r4.u32;
+  const uint32_t out_va = ctx.r5.u32;
+  if (!shape_va || !dir_va || !out_va) {
+    __imp__sub_829303D0(ctx, base);
+    return;
+  }
+#if defined(__aarch64__)
+  const float32x4_t dir = LoadBeF32x4(GuestReadPtr(base, dir_va & ~0xFu));
+  const float32x4_t v0 = LoadBeF32x4(GuestReadPtr(base, (shape_va + 32u) & ~0xFu));
+  const float32x4_t v1 = LoadBeF32x4(GuestReadPtr(base, (shape_va + 48u) & ~0xFu));
+  const float32x4_t v2 = LoadBeF32x4(GuestReadPtr(base, (shape_va + 64u) & ~0xFu));
+  const float32x4_t ext = LoadBeF32x4(GuestReadPtr(base, (shape_va + 80u) & ~0xFu));
+
+  const float dx = vgetq_lane_f32(dir, 0);
+  const float dy = vgetq_lane_f32(dir, 1);
+  const float dz = vgetq_lane_f32(dir, 2);
+  const float d0 = Dot3Be(v0, dx, dy, dz);
+  const float d1 = Dot3Be(v1, dx, dy, dz);
+  const float d2 = Dot3Be(v2, dx, dy, dz);
+
+  uint32_t best = 1u;
+  float best_d = d1;
+  float32x4_t res = v1;
+  if (d2 > d1) {
+    best = 2u;
+    best_d = d2;
+    res = v2;
+  }
+  if (d0 > best_d) {
+    best = 0u;
+    res = v0;
+  }
+
+  const float d_ext = Dot3Be(ext, dx, dy, dz);
+  const float thresh = LoadBeF32(GuestReadPtr(base, 0x82000AA4u));
+  if (d_ext > thresh) {
+    res = vaddq_f32(res, ext);
+    best += 3u;
+  }
+
+  const uint32_t out_aligned = out_va & ~0xFu;
+  StoreBeF32x4(base + out_aligned + CrtPhysOff(out_aligned), res);
+  StoreBeU32(base + (out_va + 12u) + CrtPhysOff(out_va + 12u), best | 0x3F000000u);
+#else
+  const uint8_t* dp = GuestReadPtr(base, dir_va & ~0xFu);
+  const float dx = LoadBeF32(dp), dy = LoadBeF32(dp + 4u), dz = LoadBeF32(dp + 8u);
+  float v[3][4];
+  for (int i = 0; i < 3; ++i) {
+    const uint32_t va = (shape_va + 32u + uint32_t(i) * 16u) & ~0xFu;
+    const uint8_t* vp = GuestReadPtr(base, va);
+    for (int j = 0; j < 4; ++j) v[i][j] = LoadBeF32(vp + uint32_t(j) * 4u);
+  }
+  const float d0 = v[0][0] * dx + v[0][1] * dy + v[0][2] * dz;
+  const float d1 = v[1][0] * dx + v[1][1] * dy + v[1][2] * dz;
+  const float d2 = v[2][0] * dx + v[2][1] * dy + v[2][2] * dz;
+  uint32_t best = 1u;
+  float best_d = d1;
+  if (d2 > d1) { best = 2u; best_d = d2; }
+  if (d0 > best_d) { best = 0u; }
+  float res[4] = {v[best][0], v[best][1], v[best][2], v[best][3]};
+  const uint8_t* ep = GuestReadPtr(base, (shape_va + 80u) & ~0xFu);
+  const float ex = LoadBeF32(ep), ey = LoadBeF32(ep + 4u), ez = LoadBeF32(ep + 8u), ew = LoadBeF32(ep + 12u);
+  const float thresh = LoadBeF32(GuestReadPtr(base, 0x82000AA4u));
+  if (ex * dx + ey * dy + ez * dz > thresh) {
+    res[0] += ex; res[1] += ey; res[2] += ez; res[3] += ew;
+    best += 3u;
+  }
+  uint8_t* op = base + (out_va & ~0xFu) + CrtPhysOff(out_va & ~0xFu);
+  for (int j = 0; j < 4; ++j) StoreBeF32(op + uint32_t(j) * 4u, res[j]);
+  StoreBeU32(base + (out_va + 12u) + CrtPhysOff(out_va + 12u), best | 0x3F000000u);
+#endif
+}
+
+// Native NEON XMVector3TransformCoordStream (dst[r3], out_stride[r4], src[r5], in_stride[r6], count[r7], M[r8,r9,r10,r1+88..127])
+REX_EXTERN(sub_82422970) {
+  const uint32_t count = ctx.r7.u32;
+  if (count == 0u) return;
+  const uint32_t dst_va = ctx.r3.u32;
+  const uint32_t out_stride = ctx.r4.u32;
+  const uint32_t src_va = ctx.r5.u32;
+  const uint32_t in_stride = ctx.r6.u32;
+  if (!dst_va || !src_va) {
+    __imp__sub_82422970(ctx, base);
+    return;
+  }
+
+  uint8_t m_be[64];
+  StoreBeU64(m_be + 0u, ctx.r8.u64);
+  StoreBeU64(m_be + 8u, ctx.r9.u64);
+  StoreBeU64(m_be + 16u, ctx.r10.u64);
+  std::memcpy(m_be + 24u, GuestReadPtr(base, ctx.r1.u32 + 88u), 40u);
+
+#if defined(__aarch64__)
+  const float32x4_t row0 = LoadBeF32x4(m_be + 0u);
+  const float32x4_t row1 = LoadBeF32x4(m_be + 16u);
+  const float32x4_t row2 = LoadBeF32x4(m_be + 32u);
+  const float32x4_t row3 = LoadBeF32x4(m_be + 48u);
+  for (uint32_t i = 0u, s_ea = src_va, d_ea = dst_va; i < count;
+       ++i, s_ea += in_stride, d_ea += out_stride) {
+    const uint8_t* sp = GuestReadPtr(base, s_ea);
+    const float x = LoadBeF32(sp + 0u);
+    const float y = LoadBeF32(sp + 4u);
+    const float z = LoadBeF32(sp + 8u);
+    float32x4_t r = vfmaq_n_f32(vfmaq_n_f32(vfmaq_n_f32(row3, row2, z), row1, y), row0, x);
+    r = vmulq_n_f32(r, 1.0f / vgetq_lane_f32(r, 3));
+    uint8_t* dp = base + d_ea + CrtPhysOff(d_ea);
+    StoreBeF32(dp + 0u, vgetq_lane_f32(r, 0));
+    StoreBeF32(dp + 4u, vgetq_lane_f32(r, 1));
+    StoreBeF32(dp + 8u, vgetq_lane_f32(r, 2));
+  }
+#else
+  float m[4][4];
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) m[i][j] = LoadBeF32(m_be + size_t(i * 4 + j) * 4u);
+  }
+  for (uint32_t i = 0u, s_ea = src_va, d_ea = dst_va; i < count;
+       ++i, s_ea += in_stride, d_ea += out_stride) {
+    const uint8_t* sp = GuestReadPtr(base, s_ea);
+    const float x = LoadBeF32(sp + 0u), y = LoadBeF32(sp + 4u), z = LoadBeF32(sp + 8u);
+    const float ox = x * m[0][0] + y * m[1][0] + z * m[2][0] + m[3][0];
+    const float oy = x * m[0][1] + y * m[1][1] + z * m[2][1] + m[3][1];
+    const float oz = x * m[0][2] + y * m[1][2] + z * m[2][2] + m[3][2];
+    const float inv_w = 1.0f / (x * m[0][3] + y * m[1][3] + z * m[2][3] + m[3][3]);
+    uint8_t* dp = base + d_ea + CrtPhysOff(d_ea);
+    StoreBeF32(dp + 0u, ox * inv_w);
+    StoreBeF32(dp + 4u, oy * inv_w);
+    StoreBeF32(dp + 8u, oz * inv_w);
+  }
+#endif
+}
+
+// Stage 8C native overrides (input deadzone + 46.7% active SIM hotspots)
+REX_EXTERN(sub_8218CA80) {
+  // SwitchInputDriver already applies a 15.3% radial deadzone; cap secondary axial
+  // deadzone at 4% so short-throw Joy-Con sticks keep smooth horizontal modulation.
+  const float dz = std::clamp(static_cast<float>(ctx.f1.f64), 0.0f, 0.04f);
+  const float v = std::clamp(static_cast<float>(ctx.f2.f64), -1.0f, 1.0f);
+  float res = 0.0f;
+  if (v > dz) {
+    res = (v - dz) / (1.0f - dz);
+  } else if (v < -dz) {
+    res = (v + dz) / (1.0f - dz);
+  }
+  ctx.f1.f64 = static_cast<double>(res);
+}
+
+REX_EXTERN(sub_821F4168) {
+  const uint32_t grid_va = ctx.r3.u32;
+  const uint32_t cell_idx = ctx.r4.u32;
+  const uint32_t out_list_va = ctx.r5.u32;
+  if (!grid_va || !out_list_va) {
+    __imp__sub_821F4168(ctx, base);
+    return;
+  }
+  const uint32_t buckets_va = LoadBeU32(GuestReadPtr(base, grid_va + 64u));
+  uint32_t node_va = LoadBeU32(GuestReadPtr(base, buckets_va + cell_idx * 12u));
+  if (node_va == 0u) {
+    ctx.r3.s64 = 1;
+    return;
+  }
+  const uint32_t bitset_va = LoadBeU32(GuestReadPtr(base, grid_va + 76u));
+  int32_t out_cnt = LoadBeS32(GuestReadPtr(base, out_list_va));
+  const int32_t out_cap = LoadBeS32(GuestReadPtr(base, out_list_va + 24u));
+  const uint32_t out_arr_va = LoadBeU32(GuestReadPtr(base, out_list_va + 4u));
+  while (node_va != 0u) {
+    const int32_t id = LoadBeS32(GuestReadPtr(base, node_va + 8u));
+    const uint32_t word_va = bitset_va + static_cast<uint32_t>(id >> 5) * 4u;
+    const uint32_t bit = 1u << (static_cast<uint32_t>(id) & 31u);
+    const uint32_t word = LoadBeU32(GuestReadPtr(base, word_va));
+    if ((word & bit) == 0u) {
+      if (out_cnt >= out_cap) {
+        StoreBeU32(GuestWritePtr(base, out_list_va), static_cast<uint32_t>(out_cnt));
+        ctx.r3.s64 = 0;
+        return;
+      }
+      StoreBeU16(GuestWritePtr(base, out_arr_va + static_cast<uint32_t>(out_cnt) * 2u),
+                 static_cast<uint16_t>(id));
+      StoreBeU32(GuestWritePtr(base, word_va), word | bit);
+      ++out_cnt;
+    }
+    node_va = LoadBeU32(GuestReadPtr(base, node_va + 4u));
+  }
+  StoreBeU32(GuestWritePtr(base, out_list_va), static_cast<uint32_t>(out_cnt));
+  ctx.r3.s64 = 1;
+}
+
+REX_EXTERN(sub_821FD330) {
+  const uint32_t stream_va = ctx.r3.u32;
+  const uint32_t src_va = ctx.r4.u32;
+  const uint32_t len = ctx.r5.u32;
+  if (!stream_va || !src_va || LoadBeS32(GuestReadPtr(base, 0x82C2FD60u)) != 0) {
+    __imp__sub_821FD330(ctx, base);
+    return;
+  }
+  if (len == 0u) {
+    return;
+  }
+  const uint32_t pos = LoadBeU32(GuestReadPtr(base, stream_va + 4u));
+  const uint32_t cap = LoadBeU32(GuestReadPtr(base, stream_va + 40u));
+  const uint32_t flags28 = LoadBeU32(GuestReadPtr(base, stream_va + 28u));
+  if (static_cast<uint32_t>(pos + len) > cap && ((flags28 & 2u) != 0u)) {
+    __imp__sub_821FD330(ctx, base);
+    return;
+  }
+  const uint32_t dst_va = LoadBeU32(GuestReadPtr(base, stream_va + 36u));
+  std::memmove(GuestWritePtr(base, dst_va), GuestReadPtr(base, src_va), len);
+  StoreBeU32(GuestWritePtr(base, stream_va + 36u), dst_va + len);
+}
+
+REX_EXTERN(sub_82401388) {
+  const float a = LoadBeF32(GuestReadPtr(base, ctx.r3.u32));
+  const float b = LoadBeF32(GuestReadPtr(base, ctx.r4.u32));
+  ctx.r3.s64 = (a > b) ? 1 : -1;
+}
+
+REX_EXTERN(sub_82401D20) {
+  const uint32_t mgr_va = ctx.r3.u32;
+  if (!mgr_va) {
+    __imp__sub_82401D20(ctx, base);
+    return;
+  }
+  const int32_t n_total = LoadBeS32(GuestReadPtr(base, mgr_va + 644u));
+  const uint32_t init_slots_va = LoadBeU32(GuestReadPtr(base, mgr_va + 640u));
+  const uint32_t init_arr_va = LoadBeU32(GuestReadPtr(base, mgr_va + 656u));
+  const float zero_f = LoadBeF32(GuestReadPtr(base, 0x82000AA4u));
+
+  struct Cand {
+    float key;
+    uint32_t raw_key;
+    uint32_t idx;
+  };
+  Cand stack_cands[256];
+  std::vector<Cand> heap_cands;
+  uint32_t cand_cnt = 0u;
+  int32_t active_cnt = 0;
+
+  for (int32_t i = 0; i < n_total; ++i) {
+    const uint8_t* slot = GuestReadPtr(base, init_slots_va + static_cast<uint32_t>(i) * 116u);
+    const uint16_t ch_state = LoadBeU16(slot + 72u);
+    if (ch_state < 32768u) {
+      ++active_cnt;
+    } else if (LoadBeF32(slot + 68u) > zero_f) {
+      uint32_t raw_key = 0u;
+      std::memcpy(&raw_key, slot + 100u, sizeof(raw_key));
+      raw_key = __builtin_bswap32(raw_key);
+      const Cand c{std::bit_cast<float>(raw_key), raw_key, static_cast<uint32_t>(i)};
+      if (cand_cnt < 256u && heap_cands.empty()) {
+        stack_cands[cand_cnt++] = c;
+      } else {
+        if (heap_cands.empty()) {
+          heap_cands.assign(stack_cands, stack_cands + cand_cnt);
+        }
+        heap_cands.push_back(c);
+        ++cand_cnt;
+      }
+    }
+  }
+
+  if (n_total == active_cnt) {
+    return;
+  }
+
+  if (cand_cnt > 0u) {
+    Cand* cands = heap_cands.empty() ? stack_cands : heap_cands.data();
+    std::stable_sort(cands, cands + cand_cnt, [](const Cand& a, const Cand& b) noexcept {
+      const bool a_nan = std::isnan(a.key);
+      const bool b_nan = std::isnan(b.key);
+      if (a_nan != b_nan) {
+        return a_nan;
+      }
+      return a.key < b.key;
+    });
+    for (uint32_t k = 0u; k < cand_cnt; ++k) {
+      uint8_t* entry = GuestWritePtr(base, init_arr_va + k * 8u);
+      StoreBeU32(entry, cands[k].raw_key);
+      StoreBeU32(entry + 4u, cands[k].idx);
+    }
+  }
+
+  const uint32_t orig_r1 = ctx.r1.u32;
+  const uint64_t orig_lr = ctx.lr;
+  const uint32_t frame_r1 = orig_r1 - 96u;
+  StoreBeU32(GuestWritePtr(base, frame_r1), orig_r1);
+  ctx.r1.u32 = frame_r1;
+
+  FastEnterSaberCsOrImp(ctx, base, 0x82B2B378u);
+
+  for (uint32_t k = 0u; k < cand_cnt; ++k) {
+    const uint32_t arr_va = LoadBeU32(GuestReadPtr(base, mgr_va + 656u));
+    const uint32_t slots_va = LoadBeU32(GuestReadPtr(base, mgr_va + 640u));
+    const int32_t n_ch = LoadBeS32(GuestReadPtr(base, mgr_va + 704u));
+    const uint32_t cand_idx = LoadBeU32(GuestReadPtr(base, arr_va + k * 8u + 4u));
+    const uint32_t cand_va = slots_va + cand_idx * 116u;
+    const float f11 = LoadBeF32(GuestReadPtr(base, cand_va + 68u));
+    float f12 = LoadBeF32(GuestReadPtr(base, cand_va + 100u));
+    float f13 = f11;
+    int32_t best_r5 = -1;
+    int32_t best_r4 = -1;
+    int32_t ch = 0;
+
+    for (; ch < n_ch; ++ch) {
+      const int32_t owner = LoadBeS32(GuestReadPtr(base, mgr_va + 712u + static_cast<uint32_t>(ch) * 12u));
+      if (owner == -1) {
+        break;
+      }
+      const uint8_t* slot_c = GuestReadPtr(base, slots_va + static_cast<uint32_t>(owner) * 116u);
+      if ((slot_c[0] & 0x4u) != 0u) {
+        break;
+      }
+      const float c100 = LoadBeF32(slot_c + 100u);
+      const float c68 = LoadBeF32(slot_c + 68u);
+      if (f12 < c100 && f11 > c68) {
+        f12 = c100;
+        best_r5 = ch;
+      }
+      if (f13 > c68) {
+        f13 = c68;
+        best_r4 = ch;
+      }
+    }
+
+    if (ch == n_ch) {
+      const int32_t pick = (best_r5 > 0) ? best_r5 : best_r4;
+      if (pick < 0) {
+        continue;
+      }
+      ch = pick;
+    }
+
+    const uint32_t ch_entry_va = mgr_va + 712u + static_cast<uint32_t>(ch) * 12u;
+    const int32_t old_owner = LoadBeS32(GuestReadPtr(base, ch_entry_va));
+    if (old_owner >= 0) {
+      StoreBeU16(GuestWritePtr(base, slots_va + static_cast<uint32_t>(old_owner) * 116u + 72u), 0xFFFFu);
+      StoreBeU32(GuestWritePtr(base, ch_entry_va), 0xFFFFFFFFu);
+    }
+
+    const uint32_t cur_arr_va = LoadBeU32(GuestReadPtr(base, mgr_va + 656u));
+    const uint32_t cur_idx = LoadBeU32(GuestReadPtr(base, cur_arr_va + k * 8u + 4u));
+    StoreBeU32(GuestWritePtr(base, ch_entry_va), cur_idx);
+    StoreBeU16(GuestWritePtr(base, cand_va + 72u), static_cast<uint16_t>(ch));
+
+    ctx.r3.u64 = mgr_va;
+    ctx.r4.u64 = mgr_va + 708u + static_cast<uint32_t>(ch) * 12u;
+    ctx.lr = 0x824020DCu;
+    sub_82401888(ctx, base);
+  }
+
+  FastLeaveSaberCsOrImp(ctx, base, 0x82B2B378u);
+  ctx.r1.u32 = orig_r1;
+  ctx.lr = orig_lr;
+}
+
+REX_EXTERN(sub_82430090) {
+  const uint32_t anim_va = ctx.r3.u32;
+  const int32_t frame_idx = ctx.r4.s32;
+  const uint32_t out_va = ctx.r5.u32;
+  if (!anim_va || !out_va || frame_idx < 0) {
+    __imp__sub_82430090(ctx, base);
+    return;
+  }
+  const uint32_t hdr_va = LoadBeU32(GuestReadPtr(base, anim_va + 16u));
+  const uint32_t n_ch = *GuestReadPtr(base, anim_va + 7u);
+  const uint32_t step = hdr_va ? *GuestReadPtr(base, hdr_va + 2u) : 0u;
+  if (!hdr_va || step == 0u || n_ch > 32u) {
+    __imp__sub_82430090(ctx, base);
+    return;
+  }
+
+  const uint32_t hdr_floats_va = hdr_va + 4u;
+  const uint32_t block_idx = static_cast<uint32_t>(frame_idx / static_cast<int32_t>(step)) + 2u * n_ch;
+  const uint32_t block_desc = LoadBeU32(GuestReadPtr(base, hdr_floats_va + block_idx * 4u));
+  uint32_t stream_va = hdr_va + ((block_desc >> 8) & 0xFFFFFFu);
+  const uint32_t mask_1byte = block_desc & 0xFu;
+  const uint32_t mask_const_block = (block_desc >> 4) & 0xFu;
+  const uint32_t mask_static = LoadBeU16(GuestReadPtr(base, hdr_va));
+
+  const float f9 = LoadBeF32(GuestReadPtr(base, 0x82022428u));
+  const float f10 = LoadBeF32(GuestReadPtr(base, 0x82022424u));
+  const float f11 = LoadBeF32(GuestReadPtr(base, 0x82022420u));
+  const float f12 = LoadBeF32(GuestReadPtr(base, 0x820039ACu));
+  const uint8_t* lut = GuestReadPtr(base, 0x82B2B558u);
+  auto decode16 = [&](uint16_t q) noexcept -> float {
+    return std::fmaf(LoadBeF32(lut + static_cast<uint32_t>(q >> 8) * 4u), f12,
+                     LoadBeF32(lut + static_cast<uint32_t>(q & 0xFFu) * 4u));
+  };
+
+  float out_vals[32]{};
+  float scales[32]{};
+  int32_t stride_bytes = 0;
+
+  for (uint32_t ch = 0u; ch < n_ch; ++ch) {
+    const uint32_t bit = 1u << ch;
+    const float base_v = LoadBeF32(GuestReadPtr(base, hdr_floats_va + ch * 8u));
+    if ((bit & mask_static) != 0u) {
+      out_vals[ch] = base_v;
+      continue;
+    }
+    const float range_v = LoadBeF32(GuestReadPtr(base, hdr_floats_va + ch * 8u + 4u));
+    const uint16_t q0 = LoadBeU16(GuestReadPtr(base, stream_va));
+    stream_va += 2u;
+    out_vals[ch] = std::fmaf(decode16(q0) * range_v, f11, base_v);
+    if ((bit & mask_const_block) == 0u) {
+      const uint16_t q1 = LoadBeU16(GuestReadPtr(base, stream_va));
+      stream_va += 2u;
+      const float s = range_v * decode16(q1);
+      if ((bit & mask_1byte) != 0u) {
+        stride_bytes += 1;
+        scales[ch] = s * f10;
+      } else {
+        stride_bytes += 2;
+        scales[ch] = s * f9;
+      }
+    }
+  }
+
+  if (stride_bytes != 0) {
+    const int32_t sub_frame = frame_idx % static_cast<int32_t>(step);
+    stream_va += static_cast<uint32_t>(sub_frame * stride_bytes);
+    const uint32_t skip_mask = mask_const_block | mask_static;
+    for (uint32_t ch = 0u; ch < n_ch; ++ch) {
+      const uint32_t bit = 1u << ch;
+      if ((bit & skip_mask) != 0u) {
+        continue;
+      }
+      float d = 0.0f;
+      if ((bit & mask_1byte) != 0u) {
+        const uint8_t b = *GuestReadPtr(base, stream_va++);
+        d = LoadBeF32(lut + static_cast<uint32_t>(b) * 4u);
+      } else {
+        const uint16_t q = LoadBeU16(GuestReadPtr(base, stream_va));
+        stream_va += 2u;
+        d = decode16(q);
+      }
+      out_vals[ch] = std::fmaf(d, scales[ch], out_vals[ch]);
+    }
+  }
+
+  uint8_t* dst = GuestWritePtr(base, out_va);
+  for (uint32_t ch = 0u; ch < n_ch; ++ch) {
+    StoreBeF32(dst + ch * 4u, out_vals[ch]);
+  }
+}
+
+REX_EXTERN(sub_82436068) {
+  const uint32_t iter_va = ctx.r3.u32;
+  const uint32_t out_buf_va = ctx.r4.u32;
+  const uint32_t out_count_va = ctx.r5.u32;
+  const int32_t max_count = ctx.r6.s32;
+  if (!iter_va || !out_buf_va || !out_count_va) {
+    __imp__sub_82436068(ctx, base);
+    return;
+  }
+
+  const uint8_t* it = GuestReadPtr(base, iter_va);
+  const int32_t min_x = LoadBeS32(it + 48u);
+  const int32_t min_y = LoadBeS32(it + 52u);
+  const int32_t min_z = LoadBeS32(it + 56u);
+  const int32_t max_x = LoadBeS32(it + 60u);
+  const int32_t max_y = LoadBeS32(it + 64u);
+  const int32_t max_z = LoadBeS32(it + 68u);
+  const int32_t cur_min_x = LoadBeS32(it + 76u);
+  const int32_t cur_min_y = LoadBeS32(it + 80u);
+  const int32_t cur_min_z = LoadBeS32(it + 84u);
+  const int32_t cur_max_x = LoadBeS32(it + 88u);
+  const int32_t cur_max_y = LoadBeS32(it + 92u);
+  const int32_t cur_max_z = LoadBeS32(it + 96u);
+
+  if (cur_min_x < min_x && cur_min_y < min_y && cur_min_z < min_z &&
+      cur_max_x > max_x && cur_max_y > max_y && cur_max_z > max_z) {
+    ctx.r3.s64 = 0;
+    return;
+  }
+
+  int32_t cnt = 0;
+  int32_t dim_y = 0;
+  int32_t dim_z = 0;
+  bool dims_loaded = false;
+  uint8_t* out_buf = GuestWritePtr(base, out_buf_va);
+
+  auto emit = [&](int32_t x, int32_t y, int32_t z) noexcept -> bool {
+    if (cnt >= max_count) {
+      return false;
+    }
+    if (!dims_loaded) {
+      const uint32_t grid_va = LoadBeU32(GuestReadPtr(base, iter_va + 8u));
+      const uint8_t* gp = GuestReadPtr(base, grid_va);
+      dim_y = LoadBeS32(gp + 4u);
+      dim_z = LoadBeS32(gp + 8u);
+      dims_loaded = true;
+    }
+    const int32_t idx = (dim_y * x + y) * dim_z + z;
+    StoreBeU32(out_buf + static_cast<uint32_t>(cnt) * 4u, static_cast<uint32_t>(idx));
+    ++cnt;
+    return true;
+  };
+
+  const int32_t x0 = std::max(cur_min_x, min_x);
+  const int32_t x1 = std::min(cur_max_x, max_x);
+  const int32_t z0 = std::max(cur_min_z, min_z);
+  const int32_t z1 = std::min(cur_max_z, max_z);
+  const int32_t y0 = std::max(cur_min_y + 1, min_y);
+  const int32_t y1 = std::min(cur_max_y - 1, max_y);
+  const int32_t ix0 = std::max(cur_min_x + 1, min_x);
+  const int32_t ix1 = std::min(cur_max_x - 1, max_x);
+
+  if (cur_min_y >= min_y && cur_min_y <= max_y) {
+    for (int64_t x = x0; x <= x1; ++x) {
+      for (int64_t z = z0; z <= z1; ++z) {
+        if (!emit(static_cast<int32_t>(x), cur_min_y, static_cast<int32_t>(z))) goto finish_step;
+      }
+    }
+  }
+  if (cur_max_y >= min_y && cur_max_y <= max_y && cur_min_y != cur_max_y) {
+    for (int64_t x = x0; x <= x1; ++x) {
+      for (int64_t z = z0; z <= z1; ++z) {
+        if (!emit(static_cast<int32_t>(x), cur_max_y, static_cast<int32_t>(z))) goto finish_step;
+      }
+    }
+  }
+  if (cur_min_x >= min_x && cur_min_x <= max_x) {
+    for (int64_t y = y0; y <= y1; ++y) {
+      for (int64_t z = z0; z <= z1; ++z) {
+        if (!emit(cur_min_x, static_cast<int32_t>(y), static_cast<int32_t>(z))) goto finish_step;
+      }
+    }
+  }
+  if (cur_max_x >= min_x && cur_max_x <= max_x && cur_min_x != cur_max_x) {
+    for (int64_t y = y0; y <= y1; ++y) {
+      for (int64_t z = z0; z <= z1; ++z) {
+        if (!emit(cur_max_x, static_cast<int32_t>(y), static_cast<int32_t>(z))) goto finish_step;
+      }
+    }
+  }
+  if (cur_min_z >= min_z && cur_min_z <= max_z) {
+    for (int64_t x = ix0; x <= ix1; ++x) {
+      for (int64_t y = y0; y <= y1; ++y) {
+        if (!emit(static_cast<int32_t>(x), static_cast<int32_t>(y), cur_min_z)) goto finish_step;
+      }
+    }
+  }
+  if (cur_max_z >= min_z && cur_max_z <= max_z && cur_min_z != cur_max_z) {
+    for (int64_t x = ix0; x <= ix1; ++x) {
+      for (int64_t y = y0; y <= y1; ++y) {
+        if (!emit(static_cast<int32_t>(x), static_cast<int32_t>(y), cur_max_z)) goto finish_step;
+      }
+    }
+  }
+
+finish_step:
+  StoreBeU32(GuestWritePtr(base, out_count_va), static_cast<uint32_t>(cnt));
+  uint8_t* it_w = GuestWritePtr(base, iter_va);
+  StoreBeF32(it_w + 12u, LoadBeF32(it_w + 12u) + LoadBeF32(it_w + 72u));
+  StoreBeU32(it_w + 76u, static_cast<uint32_t>(cur_min_x - 1));
+  StoreBeU32(it_w + 80u, static_cast<uint32_t>(cur_min_y - 1));
+  StoreBeU32(it_w + 84u, static_cast<uint32_t>(cur_min_z - 1));
+  StoreBeU32(it_w + 88u, static_cast<uint32_t>(cur_max_x + 1));
+  StoreBeU32(it_w + 92u, static_cast<uint32_t>(cur_max_y + 1));
+  StoreBeU32(it_w + 96u, static_cast<uint32_t>(cur_max_z + 1));
+  ctx.r3.s64 = 1;
+}
+
+REX_EXTERN(sub_82290748) {
+  const uint32_t zone_mgr_va = ctx.r3.u32;
+  const uint32_t world_va = ctx.r4.u32;
+  if (!zone_mgr_va || !world_va) {
+    __imp__sub_82290748(ctx, base);
+    return;
+  }
+
+  uint32_t zm160 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 160u)) & ~0x20u;
+  StoreBeU32(GuestWritePtr(base, zone_mgr_va + 160u), zm160);
+  if (LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)) == 0) {
+    return;
+  }
+
+  zm160 &= ~0x10u;
+  StoreBeU32(GuestWritePtr(base, zone_mgr_va + 160u), zm160);
+  const bool force_refresh = (zm160 & 0x8u) != 0u;
+  zm160 = force_refresh ? (zm160 | 0x40u) : (zm160 & ~0x40u);
+  StoreBeU32(GuestWritePtr(base, zone_mgr_va + 160u), zm160);
+
+  const uint32_t orig_r1 = ctx.r1.u32;
+  const uint64_t orig_lr = ctx.lr;
+  const uint32_t frame_r1 = orig_r1 - 128u;
+  StoreBeU32(GuestWritePtr(base, frame_r1), orig_r1);
+  ctx.r1.u32 = frame_r1;
+  const uint32_t scratch_type_va = frame_r1 + 80u;
+  const uint32_t scratch_pos_va = frame_r1 + 88u;
+
+  const float f30 = LoadBeF32(GuestReadPtr(base, 0x82031B7Cu));
+  const float f29 = LoadBeF32(GuestReadPtr(base, 0x82000AB4u));
+  const float f31 = LoadBeF32(GuestReadPtr(base, 0x82001148u));
+  const uint64_t want_mask = LoadBeU64(GuestReadPtr(base, 0x82C4B1B4u));
+
+  // Loop 1: scan active slots [0..2699] across 85 32-bit bitmask words at [ent_mgr + 80].
+  uint32_t ent_mgr_va = LoadBeU32(GuestReadPtr(base, 0x82C2F630u));
+  for (uint32_t w = 0u; w < 85u; ++w) {
+    uint32_t bits = LoadBeU32(GuestReadPtr(base, ent_mgr_va + 80u + w * 4u));
+    if (w == 84u) {
+      bits &= 0xFFFu;
+    }
+    while (bits != 0u) {
+      const uint32_t b = static_cast<uint32_t>(__builtin_ctz(bits));
+      bits &= (bits - 1u);
+      const uint32_t slot_idx = w * 32u + b;
+      const uint32_t ent_va = LoadBeU32(GuestReadPtr(base, ent_mgr_va + 10960u)) + slot_idx * 568u;
+      uint32_t sub_obj = LoadBeU32(GuestReadPtr(base, ent_va + 16u));
+      if (sub_obj == 0u) {
+        continue;
+      }
+      const uint32_t f4 = LoadBeU32(GuestReadPtr(base, ent_va + 4u));
+      if ((f4 & 0x800u) != 0u) {
+        continue;
+      }
+      const bool is_alt = (f4 & 0x40u) != 0u;
+      if (is_alt && (LoadBeU32(GuestReadPtr(base, ent_va + 8u)) & 0x20u) == 0u) {
+        continue;
+      }
+
+      if (!is_alt) {
+        const uint32_t cs_va = ent_va + 488u;
+        FastEnterSaberCsOrImp(ctx, base, cs_va);
+        std::memmove(GuestWritePtr(base, scratch_pos_va), GuestReadPtr(base, ent_va + 104u), 12u);
+        FastLeaveSaberCsOrImp(ctx, base, cs_va);
+      } else {
+        ctx.r3.u64 = ent_va;
+        ctx.r4.u64 = scratch_pos_va;
+        ctx.lr = 0x8229089Cu;
+        sub_8228ECF8(ctx, base);
+      }
+
+      sub_obj = LoadBeU32(GuestReadPtr(base, ent_va + 16u));
+      if (sub_obj != 0u) {
+        const uint32_t obj120 = LoadBeU32(GuestReadPtr(base, sub_obj + 120u));
+        const uint32_t vtbl = LoadBeU32(GuestReadPtr(base, obj120));
+        const uint32_t vfn = LoadBeU32(GuestReadPtr(base, vtbl + 24u));
+        uint64_t type_mask = 0u;
+        if (vfn == 0x8223A010u) {
+          type_mask = LoadBeU64(GuestReadPtr(base, 0x82C412E4u));
+        } else {
+          PPCFunc* fn = rex::runtime::ResolveIndirectFunction(vfn);
+          ctx.r3.u64 = scratch_type_va;
+          ctx.r4.u64 = obj120;
+          ctx.ctr.u64 = vfn;
+          ctx.last_indirect_target = vfn;
+          ctx.lr = 0x822908C8u;
+          fn(ctx, base);
+          type_mask = LoadBeU64(GuestReadPtr(base, scratch_type_va));
+        }
+        if ((type_mask & want_mask) == want_mask) {
+          const uint32_t sub_obj2 = LoadBeU32(GuestReadPtr(base, ent_va + 16u));
+          const uint32_t obj624 = LoadBeU32(GuestReadPtr(base, sub_obj2 + 624u));
+          if (obj624 != 0u) {
+            ctx.r3.u64 = obj624;
+            ctx.r4.u64 = scratch_pos_va;
+            ctx.lr = 0x822908F0u;
+            sub_822FE0A0(ctx, base);
+          }
+        }
+      }
+
+      const float px = LoadBeF32(GuestReadPtr(base, scratch_pos_va + 0u));
+      const float py = LoadBeF32(GuestReadPtr(base, scratch_pos_va + 4u));
+      const float pz = LoadBeF32(GuestReadPtr(base, scratch_pos_va + 8u));
+      if (!force_refresh) {
+        const float dx = px - LoadBeF32(GuestReadPtr(base, ent_va + 20u));
+        const float dz = pz - LoadBeF32(GuestReadPtr(base, ent_va + 28u));
+        if (std::sqrt(dx * dx + dz * dz) < f31 &&
+            std::fabs(py - LoadBeF32(GuestReadPtr(base, ent_va + 24u))) < f29) {
+          continue;
+        }
+      }
+
+      StoreBeF32(GuestWritePtr(base, ent_va + 20u), px);
+      StoreBeF32(GuestWritePtr(base, ent_va + 24u), py);
+      StoreBeF32(GuestWritePtr(base, ent_va + 28u), pz);
+      StoreBeF32(GuestWritePtr(base, scratch_pos_va + 4u), py + f30);
+
+      for (int32_t j = 0; j < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)); ++j) {
+        const uint32_t arr164 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 164u));
+        const uint32_t elem_va = LoadBeU32(GuestReadPtr(base, arr164 + static_cast<uint32_t>(j) * 4u));
+        const uint32_t f224 = LoadBeU32(GuestReadPtr(base, elem_va + 224u)) & ~0x100u;
+        StoreBeU32(GuestWritePtr(base, elem_va + 224u), f224);
+        if ((f224 & (0x40u | 0x80u)) != 0u) {
+          const uint32_t zobj = elem_va + 160u;
+          const uint32_t zvtbl = LoadBeU32(GuestReadPtr(base, zobj));
+          const uint32_t zvfn = LoadBeU32(GuestReadPtr(base, zvtbl + 12u));
+          PPCFunc* fn = rex::runtime::ResolveIndirectFunction(zvfn);
+          ctx.r3.u64 = zobj;
+          ctx.r4.u64 = scratch_pos_va;
+          ctx.r5.u64 = 0u;
+          ctx.ctr.u64 = zvfn;
+          ctx.last_indirect_target = zvfn;
+          ctx.lr = 0x822909C0u;
+          fn(ctx, base);
+          if (ctx.r3.s32 != 0) {
+            const uint32_t cur224 = LoadBeU32(GuestReadPtr(base, elem_va + 224u));
+            StoreBeU32(GuestWritePtr(base, elem_va + 224u), cur224 | 0x100u);
+          }
+        }
+      }
+
+      StoreBeU32(GuestWritePtr(base, ent_va + 4u),
+                 LoadBeU32(GuestReadPtr(base, ent_va + 4u)) | 0x2u);
+
+      for (int32_t j = 0; j < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)); ++j) {
+        const uint32_t arr164 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 164u));
+        const uint32_t elem_va = LoadBeU32(GuestReadPtr(base, arr164 + static_cast<uint32_t>(j) * 4u));
+        const uint32_t f224 = LoadBeU32(GuestReadPtr(base, elem_va + 224u));
+        if ((f224 & 0x40u) != 0u && (f224 & 0x100u) != 0u) {
+          StoreBeU32(GuestWritePtr(base, ent_va + 4u),
+                     LoadBeU32(GuestReadPtr(base, ent_va + 4u)) & ~0x2u);
+        }
+      }
+      for (int32_t j = 0; j < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)); ++j) {
+        const uint32_t arr164 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 164u));
+        const uint32_t elem_va = LoadBeU32(GuestReadPtr(base, arr164 + static_cast<uint32_t>(j) * 4u));
+        const uint32_t f224 = LoadBeU32(GuestReadPtr(base, elem_va + 224u));
+        if ((f224 & 0x80u) != 0u && (f224 & 0x100u) != 0u) {
+          StoreBeU32(GuestWritePtr(base, ent_va + 4u),
+                     LoadBeU32(GuestReadPtr(base, ent_va + 4u)) | 0x2u);
+        }
+      }
+
+      ent_mgr_va = LoadBeU32(GuestReadPtr(base, 0x82C2F630u));
+      if (b < 31u) {
+        uint32_t refreshed = LoadBeU32(GuestReadPtr(base, ent_mgr_va + 80u + w * 4u));
+        refreshed &= (~0u << (b + 1u));
+        if (w == 84u) {
+          refreshed &= 0xFFFu;
+        }
+        bits = refreshed;
+      } else {
+        bits = 0u;
+      }
+    }
+  }
+
+  if (force_refresh) {
+    uint32_t f160 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 160u));
+    f160 = (f160 & ~0x8u) | 0x10u;
+    StoreBeU32(GuestWritePtr(base, zone_mgr_va + 160u), f160);
+
+    for (int32_t k = 0; k < LoadBeS32(GuestReadPtr(base, world_va + 10952u)); ++k) {
+      const uint32_t arr = LoadBeU32(GuestReadPtr(base, world_va + 11008u));
+      const int32_t sk = static_cast<int32_t>(static_cast<int16_t>(k));
+      const uint32_t ptr = LoadBeU32(GuestReadPtr(base, arr + static_cast<uint32_t>(sk) * 4u));
+      if (ptr != 0u) {
+        const uint32_t f4 = LoadBeU32(GuestReadPtr(base, ptr + 4u));
+        if ((f4 & 0x20000u) == 0u) {
+          const uint32_t nf4 = (LoadBeS32(GuestReadPtr(base, ptr + 20u)) > 0) ? (f4 | 0x20u) : (f4 & ~0x20u);
+          StoreBeU32(GuestWritePtr(base, ptr + 4u), nf4);
+        }
+      }
+    }
+
+    for (int32_t k = 0; k < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 232u)); ++k) {
+      const uint32_t arr = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 228u));
+      const uint32_t ptr = LoadBeU32(GuestReadPtr(base, arr + static_cast<uint32_t>(k) * 4u));
+      StoreBeU32(GuestWritePtr(base, ptr + 4u), LoadBeU32(GuestReadPtr(base, ptr + 4u)) | 0x20u);
+    }
+
+    ent_mgr_va = LoadBeU32(GuestReadPtr(base, 0x82C2F630u));
+    const uint32_t ents_base = LoadBeU32(GuestReadPtr(base, ent_mgr_va + 10960u));
+    for (uint32_t w = 0u; w < 85u; ++w) {
+      uint32_t bits = LoadBeU32(GuestReadPtr(base, ent_mgr_va + 80u + w * 4u));
+      if (w == 84u) {
+        bits &= 0xFFFu;
+      }
+      while (bits != 0u) {
+        const uint32_t b = static_cast<uint32_t>(__builtin_ctz(bits));
+        bits &= (bits - 1u);
+        const uint32_t ent_va = ents_base + (w * 32u + b) * 568u;
+        const uint32_t f4 = LoadBeU32(GuestReadPtr(base, ent_va + 4u));
+        if ((f4 & 0x800u) == 0u && (f4 & 0x40u) != 0u &&
+            (LoadBeU32(GuestReadPtr(base, ent_va + 8u)) & 0x20u) == 0u) {
+          StoreBeU32(GuestWritePtr(base, ent_va + 4u), f4 | 0x2u);
+        }
+      }
+    }
+
+    for (int32_t j = 0; j < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)); ++j) {
+      const uint32_t arr164 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 164u));
+      const uint32_t elem_va = LoadBeU32(GuestReadPtr(base, arr164 + static_cast<uint32_t>(j) * 4u));
+      if ((LoadBeU32(GuestReadPtr(base, elem_va + 224u)) & 0x40u) != 0u) {
+        ctx.r3.u64 = elem_va;
+        ctx.r4.s64 = 1;
+        ctx.lr = 0x82290E4Cu;
+        sub_8228F2E0(ctx, base);
+      }
+    }
+    for (int32_t j = 0; j < LoadBeS32(GuestReadPtr(base, zone_mgr_va + 168u)); ++j) {
+      const uint32_t arr164 = LoadBeU32(GuestReadPtr(base, zone_mgr_va + 164u));
+      const uint32_t elem_va = LoadBeU32(GuestReadPtr(base, arr164 + static_cast<uint32_t>(j) * 4u));
+      if ((LoadBeU32(GuestReadPtr(base, elem_va + 224u)) & 0x80u) != 0u) {
+        ctx.r3.u64 = elem_va;
+        ctx.r4.s64 = 0;
+        ctx.lr = 0x82290E94u;
+        sub_8228F2E0(ctx, base);
+      }
+    }
+
+    ctx.r3.u64 = LoadBeU32(GuestReadPtr(base, world_va + 10948u));
+    ctx.lr = 0x82290EB0u;
+    sub_8228FF80(ctx, base);
+
+    ctx.r3.s64 = 1030;
+    ctx.r4.s64 = 0;
+    ctx.r5.u64 = zone_mgr_va;
+    ctx.lr = 0x82290EC0u;
+    sub_821F0168(ctx, base);
+
+    ctx.r3.u64 = LoadBeU32(GuestReadPtr(base, 0x82C2C22Cu));
+    ctx.r4.u64 = LoadBeU32(GuestReadPtr(base, 0x82C2F630u));
+    ctx.lr = 0x82290ED0u;
+    sub_821E1210(ctx, base);
+  }
+
+  ctx.r1.u32 = orig_r1;
+  ctx.lr = orig_lr;
 }

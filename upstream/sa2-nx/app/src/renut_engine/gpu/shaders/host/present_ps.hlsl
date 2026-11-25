@@ -10,13 +10,79 @@ float4 main(PSInput input) : SV_Target0
 {
     Texture2D<float4> src = g_Textures[NonUniformResourceIndex(g_Push.textureIndex)];
     SamplerState samp = g_Samplers[NonUniformResourceIndex(g_Push.samplerIndex)];
-    float4 color = src.SampleLevel(samp, input.uv, 0.0);
 
-    // Negative param0 enables single-pass FXAA 3.11 Console smoothing; magnitude is output gamma.
-    const bool useFxaa = g_Push.param0 < 0.0;
-    const float gamma = abs(g_Push.param0);
-    if (useFxaa)
+    // param0 < -20.0 enables single-pass FidelityFX CAS sharpening (-(20.0 + sharpness));
+    // -20.0 <= param0 < -10.0 enables FSR 1 RCAS pass after EASU (-(10.0 + sharpness));
+    // -10.0 <= param0 < 0.0 enables single-pass FXAA 3.11 Console smoothing; magnitude is output gamma.
+    const bool useCas = g_Push.param0 < -20.0;
+    const bool useRcas = !useCas && g_Push.param0 < -10.0;
+    const bool useFxaa = !useCas && !useRcas && g_Push.param0 < 0.0;
+    const float gamma = (useCas || useRcas) ? 1.0 : abs(g_Push.param0);
+    float4 color = float4(0.0, 0.0, 0.0, 1.0);
+    if (useCas)
     {
+        uint texW = 1u, texH = 1u;
+        src.GetDimensions(texW, texH);
+        const float2 rcp = 1.0 / float2(max(texW, 1u), max(texH, 1u));
+        const float2 uvMin = g_Push.translate + rcp * 0.5;
+        const float2 uvMax = max(uvMin, g_Push.translate + g_Push.scale - rcp * 0.5);
+
+        const float3 e = src.SampleLevel(samp, input.uv, 0.0).rgb;
+        const float3 b = src.SampleLevel(samp, clamp(input.uv + float2( 0.0, -rcp.y), uvMin, uvMax), 0.0).rgb;
+        const float3 d = src.SampleLevel(samp, clamp(input.uv + float2(-rcp.x,  0.0), uvMin, uvMax), 0.0).rgb;
+        const float3 f = src.SampleLevel(samp, clamp(input.uv + float2( rcp.x,  0.0), uvMin, uvMax), 0.0).rgb;
+        const float3 h = src.SampleLevel(samp, clamp(input.uv + float2( 0.0,  rcp.y), uvMin, uvMax), 0.0).rgb;
+
+        const float3 mn = min(min(b, d), min(f, h));
+        const float3 mn2 = min(mn, e);
+        const float3 mx = max(max(b, d), max(f, h));
+        const float3 mx2 = max(mx, e);
+        const float3 amp = saturate(min(mn2, 2.0 - mx2) / max(mx2, 1e-5));
+        const float casSharp = clamp(-g_Push.param0 - 20.0, 0.0, 1.0);
+        const float peak = -1.0 / lerp(8.0, 5.0, casSharp);
+        const float3 w = sqrt(amp) * peak;
+        color.rgb = saturate(((b + d + f + h) * w + e) / (1.0 + 4.0 * w));
+    }
+    else if (useRcas)
+    {
+        uint texW = 1u, texH = 1u;
+        src.GetDimensions(texW, texH);
+        const int2 lo = int2(0, 0);
+        const int2 hi = int2(max(texW, 1u), max(texH, 1u)) - 1;
+        const int2 p = clamp(int2(floor(input.uv * float2(max(texW, 1u), max(texH, 1u)))), lo, hi);
+
+        const float3 b = src.Load(int3(clamp(p + int2( 0, -1), lo, hi), 0)).rgb;
+        const float3 d = src.Load(int3(clamp(p + int2(-1,  0), lo, hi), 0)).rgb;
+        const float3 e = src.Load(int3(p, 0)).rgb;
+        const float3 f = src.Load(int3(clamp(p + int2( 1,  0), lo, hi), 0)).rgb;
+        const float3 h = src.Load(int3(clamp(p + int2( 0,  1), lo, hi), 0)).rgb;
+
+        const float bL = b.b * 0.5 + (b.r * 0.5 + b.g);
+        const float dL = d.b * 0.5 + (d.r * 0.5 + d.g);
+        const float eL = e.b * 0.5 + (e.r * 0.5 + e.g);
+        const float fL = f.b * 0.5 + (f.r * 0.5 + f.g);
+        const float hL = h.b * 0.5 + (h.r * 0.5 + h.g);
+
+        const float lumaRange = max(max(max(bL, dL), max(fL, hL)), eL) -
+                                min(min(min(bL, dL), min(fL, hL)), eL);
+        float nz = 0.25 * (bL + dL + fL + hL) - eL;
+        nz = clamp(abs(nz) / max(lumaRange, 1e-5), 0.0, 1.0);
+        nz = -0.5 * nz + 1.0;
+
+        const float3 mn4 = min(min(b, d), min(f, h));
+        const float3 mx4 = max(max(b, d), max(f, h));
+        const float3 mn = min(mn4, e);
+        const float3 mx = max(mx4, e);
+        const float3 hitMin = mn / max(4.0 * mx, 1e-5);
+        const float3 hitMax = (1.0 - mx) / min(4.0 * mn - 4.0, -1e-5);
+        const float3 lobeRGB = max(-hitMin, hitMax);
+        const float rcasSharp = clamp(-g_Push.param0 - 10.0, 0.0, 1.0);
+        const float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * rcasSharp * nz;
+        color.rgb = saturate((e + lobe * (b + d + f + h)) / (1.0 + 4.0 * lobe));
+    }
+    else if (useFxaa)
+    {
+        color = src.SampleLevel(samp, input.uv, 0.0);
         uint texW = 1u, texH = 1u;
         src.GetDimensions(texW, texH);
         const float2 rcp = 1.0 / float2(max(texW, 1u), max(texH, 1u));
@@ -57,6 +123,10 @@ float4 main(PSInput input) : SV_Target0
             const float lumaB = dot(rgbB, lumaCoeff);
             color.rgb = (lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB;
         }
+    }
+    else
+    {
+        color = src.SampleLevel(samp, input.uv, 0.0);
     }
 
     // sa2-nx (2026-10-20): param1's bits, when not 0, = the bindless slot of the game's display gamma ramp

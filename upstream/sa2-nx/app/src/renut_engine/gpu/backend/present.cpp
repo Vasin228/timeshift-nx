@@ -73,6 +73,9 @@ REXCVAR_DEFINE_BOOL(renut_vsync, true, "Nuts&Bolts/Graphics",
 #if defined(TIMESHIFT_RECOMP)
 REXCVAR_DEFINE_BOOL(renut_fxaa, true, "Nuts&Bolts/Graphics",
                     "Apply single-pass FXAA 3.11 edge smoothing at scan-out.");
+REXCVAR_DEFINE_STRING(renut_fsr, "Med", "Nuts&Bolts/Graphics",
+                      "AMD FidelityFX sharpening/upscaling: Off, Low/Med/High (single-pass CAS), EASU (2-pass FSR 1).")
+    .allowed({"Off", "Low", "Med", "High", "EASU"});
 REXCVAR_DEFINE_STRING(renut_fps_cap, "30", "Nuts&Bolts/Graphics",
                       "Hardware display sync / FPS cap: 30, 60, or Off.")
     .allowed({"30", "60", "Off"});
@@ -235,7 +238,62 @@ void UpdateGammaRampLocked(VideoState &s) {
   g.uploaded = version;
 }
 
-void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uint32_t out_h) {
+#if defined(TIMESHIFT_RECOMP)
+bool EnsureFsrTargetLocked(VideoState &s, uint32_t w, uint32_t h) {
+  if (!w || !h)
+    return false;
+  if (s.fsr_target && s.fsr_view && s.fsr_framebuffer && s.fsr_slot != kInvalidDescriptor &&
+      s.fsr_width == w && s.fsr_height == h) {
+    return true;
+  }
+  if (s.fsr_framebuffer)
+    Video::RetireLocked(std::move(s.fsr_framebuffer));
+  if (s.fsr_view)
+    Video::RetireLocked(std::move(s.fsr_view));
+  if (s.fsr_target)
+    Video::RetireLocked(std::move(s.fsr_target));
+  s.fsr_width = 0;
+  s.fsr_height = 0;
+
+  constexpr plume::RenderFormat kFsrFormat = plume::RenderFormat::R8G8B8A8_UNORM;
+  plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(w, h, 1, kFsrFormat);
+  desc.flags |= plume::RenderTextureFlag::RENDER_TARGET;
+  s.fsr_target = s.device->createTexture(desc);
+  if (!s.fsr_target)
+    return false;
+  s.fsr_target->setName("renut fsr easu");
+  s.fsr_view = s.fsr_target->createTextureView(plume::RenderTextureViewDesc::Texture2D(kFsrFormat));
+  const plume::RenderTexture *targets[] = {s.fsr_target.get()};
+  s.fsr_framebuffer = s.device->createFramebuffer(plume::RenderFramebufferDesc(targets, 1));
+  if (s.fsr_slot == kInvalidDescriptor)
+    s.fsr_slot = Video::AllocateTextureSlotLocked();
+  if (!s.fsr_view || !s.fsr_framebuffer || s.fsr_slot == kInvalidDescriptor) {
+    s.fsr_framebuffer.reset();
+    s.fsr_view.reset();
+    s.fsr_target.reset();
+    return false;
+  }
+  Video::SetTextureSlotLocked(s.fsr_slot, s.fsr_target.get(), s.fsr_view.get());
+  s.fsr_width = w;
+  s.fsr_height = h;
+  return true;
+}
+
+float FsrRcasSharpness(bool &use_easu) {
+  const std::string &mode = REXCVAR_GET(renut_fsr);
+  use_easu = (mode == "EASU");
+  if (mode == "Low")
+    return 0.45f;
+  if (mode == "Med")
+    return 0.75f;
+  if (mode == "High" || use_easu)
+    return 1.00f;
+  return 0.0f;
+}
+#endif
+
+void RecordScanOut(VideoState &s, const PresentImage &image, plume::RenderFramebuffer *out_fb,
+                   uint32_t out_w, uint32_t out_h) {
   plume::RenderCommandList *cmd = s.command_list;
   if (image.layout && *image.layout != plume::RenderTextureLayout::SHADER_READ) {
     cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -247,14 +305,8 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   const uint32_t src_h = image.source_height ? image.source_height : image.height;
   const FrameFit fit = FitFrame(out_w, out_h, src_w, src_h);
   const plume::RenderViewport &vp = fit.viewport;
-  cmd->setViewports(vp);
-  cmd->setScissors(plume::RenderRect(int32_t(vp.x), int32_t(vp.y), int32_t(vp.x + vp.width),
-                                     int32_t(vp.y + vp.height)));
-
-  cmd->setGraphicsPipelineLayout(s.utility_layout.get());
-  cmd->setPipeline(s.present_pipeline.get());
-  cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
-  cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
+  const uint32_t dst_w = std::max(1u, uint32_t(vp.width));
+  const uint32_t dst_h = std::max(1u, uint32_t(vp.height));
 
   UtilityPush push{};
   // The frame's share of the texture, less what the fit trims from its edges.
@@ -266,10 +318,36 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   push.translate[1] = frame_v * (1.0f - fit.visible[1]) * 0.5f;
   push.texture_index = image.descriptor;
   push.sampler_index = kLinearClampSamplerSlot;
+
   const float gamma = image.gamma > 0.0f ? image.gamma : s.output_gamma;
 #if defined(TIMESHIFT_RECOMP)
-  const bool use_fxaa = image.gamma <= 0.0f && REXCVAR_GET(renut_fxaa);
-  push.param0 = use_fxaa ? -gamma : gamma;
+  bool use_easu = false;
+  const float sharp = (image.gamma <= 0.0f && gamma == 1.0f) ? FsrRcasSharpness(use_easu) : 0.0f;
+  if (use_easu && sharp > 0.0f && (src_w < dst_w || src_h < dst_h) && s.fsr_easu_pipeline &&
+      EnsureFsrTargetLocked(s, dst_w, dst_h)) {
+    cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
+                  plume::RenderTextureBarrier(s.fsr_target.get(), plume::RenderTextureLayout::COLOR_WRITE));
+    cmd->setFramebuffer(s.fsr_framebuffer.get());
+    cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(dst_w), float(dst_h)));
+    cmd->setScissors(plume::RenderRect(0, 0, int32_t(dst_w), int32_t(dst_h)));
+    cmd->setGraphicsPipelineLayout(s.utility_layout.get());
+    cmd->setPipeline(s.fsr_easu_pipeline.get());
+    cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
+    cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
+    cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+    cmd->drawInstanced(3, 1, 0, 0);
+
+    cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
+                  plume::RenderTextureBarrier(s.fsr_target.get(), plume::RenderTextureLayout::SHADER_READ));
+    cmd->setFramebuffer(out_fb);
+    push.scale[0] = 1.0f;
+    push.scale[1] = 1.0f;
+    push.translate[0] = 0.0f;
+    push.translate[1] = 0.0f;
+    push.texture_index = s.fsr_slot;
+  }
+  const bool use_fxaa = sharp <= 0.0f && image.gamma <= 0.0f && REXCVAR_GET(renut_fxaa);
+  push.param0 = (sharp > 0.0f) ? (use_easu ? (-10.0f - sharp) : (-20.0f - sharp)) : (use_fxaa ? -gamma : gamma);
 #else
   push.param0 = gamma;
 #endif
@@ -280,6 +358,14 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
                                  ? g_gamma.slot
                                  : 0u;
   push.param1 = std::bit_cast<float>(ramp_slot);
+
+  cmd->setViewports(vp);
+  cmd->setScissors(plume::RenderRect(int32_t(vp.x), int32_t(vp.y), int32_t(vp.x + vp.width),
+                                     int32_t(vp.y + vp.height)));
+  cmd->setGraphicsPipelineLayout(s.utility_layout.get());
+  cmd->setPipeline(s.present_pipeline.get());
+  cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
+  cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
   cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   cmd->drawInstanced(3, 1, 0, 0);
 }
@@ -372,7 +458,7 @@ bool CaptureFrameLocked(VideoState &s, const PresentImage &image, rex::ui::RawIm
   cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
                 plume::RenderTextureBarrier(c.target.get(), plume::RenderTextureLayout::COLOR_WRITE));
   cmd->setFramebuffer(c.framebuffer.get());
-  RecordScanOut(s, image, w, h);
+  RecordScanOut(s, image, c.framebuffer.get(), w, h);
   cmd->setFramebuffer(nullptr);
   cmd->barriers(plume::RenderBarrierStage::COPY,
                 plume::RenderTextureBarrier(c.target.get(), plume::RenderTextureLayout::COPY_SOURCE));
@@ -530,7 +616,7 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
     cmd->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
 
   if (scan_out)
-    RecordScanOut(s, *image, out_w, out_h);
+    RecordScanOut(s, *image, back_fb, out_w, out_h);
 
   cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(out_w), float(out_h)));
   cmd->setScissors(plume::RenderRect(0, 0, int32_t(out_w), int32_t(out_h)));
