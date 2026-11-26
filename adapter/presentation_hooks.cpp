@@ -232,12 +232,6 @@ inline rex::memory::BaseHeap* GetVirtualHeap64K() {
 }
 
 uint32_t MallocLocked(uint8_t* base, uint32_t req_size) {
-#if defined(__SWITCH__)
-  static thread_local uint32_t s_sim_alloc_probe = 0;
-  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_alloc_probe & 127u) == 0u) {
-    timeshift::telemetry::AccountThreadCpuTicks(0);
-  }
-#endif
   SetHeapOp(1u);
   ++g_alloc_cnt;
   if (req_size > kMaxValidReq) return 0u;
@@ -878,11 +872,7 @@ void NativeSwap(PPCContext& ctx, uint8_t* base) {
     // 6. Run ready guest callbacks after queueing frame
     registry.Memory().RunCallbacks();
 
-    // 7. Bounded startup / presentation progress logging
     const uint64_t call_idx = g_swap_calls.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (call_idx % 300 == 0) {
-      timeshift::telemetry::CheckAndReportDrops(call_idx);
-    }
     if (call_idx == 1 || call_idx % 60 == 0) {
       const uint32_t retired = Word(dev_span, kPresentRetiredCount);
       REXLOG_INFO("[present] Progress: frame #{}, swap_count={}, retired={}, in_flight={}",
@@ -2181,12 +2171,6 @@ inline float Dot3Be(float32x4_t a, float dx, float dy, float dz) noexcept {
 
 // Native Saber critical section fast-path + GetPos (Stage 8B)
 REX_EXTERN(sub_82144DA0) {
-#if defined(__SWITCH__)
-  static thread_local uint32_t s_sim_cs_probe = 0;
-  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_cs_probe & 4095u) == 0u) {
-    timeshift::telemetry::AccountThreadCpuTicks(0);
-  }
-#endif
   if (!TryFastEnterSaberCs(base, ctx.r3.u32)) {
     __imp__sub_82144DA0(ctx, base);
   }

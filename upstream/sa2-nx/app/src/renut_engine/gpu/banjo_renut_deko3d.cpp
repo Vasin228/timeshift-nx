@@ -306,9 +306,10 @@ std::unique_ptr<plume::RenderShader> CreateGameShader(plume::RenderDevice *devic
 }
 
 void InstallShaderCache() {
-  // The back end's messages into this log (plume writes them to stderr otherwise), and into deko3d.log next to the NRO,
-  // flushed at each line: the log's buffer is lost when the process dies.
-  static FILE *diag = std::fopen(NextToExecutable("deko3d.log").string().c_str(), "w");
+  // Diagnostic Deko3D backend messages go to deko3d.log only when banjo_renut_diag_gpu_shaders is enabled.
+  static FILE *diag = banjo::renut_gpu::Latch().diag_gpu_shaders
+                          ? std::fopen(NextToExecutable("deko3d.log").string().c_str(), "w")
+                          : nullptr;
   static std::mutex diag_mutex;
   plume::SetDeko3DLogCallback([](const char *message) {
     REXLOG_INFO("[deko3d] {}", message);

@@ -160,7 +160,7 @@ void ResetPerFrameCounters() {
   g_orig_cnt_res.store(0, std::memory_order_relaxed);
 }
 
-void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
+[[maybe_unused]] void FlushPerfWindowCsv(const PerfSample* samples, uint32_t count) {
   static char csv_buf[131072];
   size_t pos = 0;
   auto append = [&](int n) {
@@ -561,6 +561,7 @@ void LatchTuning() {
   g_latched.output_trim = false;
   g_latched.alpha_spec = false;
   g_latched.tess_spec = true;
+  g_latched.diag_gpu_shaders = REXCVAR_GET(banjo_renut_diag_gpu_shaders);
   g_latched_ready.store(true, std::memory_order_release);
 }
 
@@ -636,7 +637,7 @@ void CountKick() {}
 void CountDrawKind(bool depth_only, bool depth_only_plain, bool writes_nothing, bool partial_mask) {
   (void)depth_only; (void)depth_only_plain; (void)writes_nothing; (void)partial_mask;
 }
-uint64_t TextureReserveBytes() { return 320ull << 20; }
+uint64_t TextureReserveBytes() { return 512ull << 20; }
 uint64_t StreamCacheMaxBytes(uint64_t renut_max) { (void)renut_max; return 64ull << 20; }
 uint64_t StreamCacheIdleFrames(uint64_t renut_frames) { (void)renut_frames; return 600u; }
 uint32_t UploadTrimResets(uint32_t renut_resets, uint32_t frames_in_flight) {
@@ -821,95 +822,7 @@ void UpdateLiveFpsStats(double frame_ms, double ren_ms, double gpu_ms, uint32_t 
     hud_draws = 0;
     hud_frames = 0;
   }
-
-  // 1.0s continuous session logger (fps_log.csv + [fps] log line).
-  static double session_time_s = 0.0;
-  static double sec_ms = 0.0;
-  static double sec_min_ms = 1e9;
-  static double sec_max_ms = 0.0;
-  static double sec_gpu_ms = 0.0;
-  static double sec_ren_ms = 0.0;
-  static uint64_t sec_draws = 0;
-  static uint32_t sec_frames = 0;
-  static bool header_written = false;
-  static std::vector<double> sec_samples = [] {
-    std::vector<double> v;
-    v.reserve(128);
-    return v;
-  }();
-
-  sec_ms += clamped_ms;
-  sec_min_ms = std::min(sec_min_ms, clamped_ms);
-  sec_max_ms = std::max(sec_max_ms, clamped_ms);
-  sec_gpu_ms += gpu_ms;
-  sec_ren_ms += ren_ms;
-  sec_draws += draws;
-  ++sec_frames;
-  sec_samples.push_back(clamped_ms);
-
-  if (sec_ms >= 1000.0) {
-    session_time_s += sec_ms / 1000.0;
-    std::sort(sec_samples.begin(), sec_samples.end());
-    const size_t p95_idx = std::min((sec_samples.size() * 95) / 100, sec_samples.size() - 1);
-    const double p95_ms = sec_samples[p95_idx];
-    const double fps = (1000.0 * double(sec_frames)) / sec_ms;
-    const double min_fps = sec_max_ms > 0.1 ? (1000.0 / sec_max_ms) : 0.0;
-    const double max_fps = sec_min_ms > 0.1 ? (1000.0 / sec_min_ms) : 0.0;
-    const double avg_ms = sec_ms / double(sec_frames);
-    const double avg_gpu = sec_gpu_ms / double(sec_frames);
-    const double avg_ren = sec_ren_ms / double(sec_frames);
-    const double avg_draws = double(sec_draws) / double(sec_frames);
-
-    static std::string s_fps_csv_buf = [] {
-      std::string s;
-      s.reserve(2048);
-      return s;
-    }();
-    static uint32_t s_fps_csv_pending = 0;
-    static bool s_fps_file_opened = false;
-    if (!header_written) {
-      s_fps_csv_buf += "time_s,frames,fps,min_fps,max_fps,avg_ms,p95_ms,max_ms,gpu_ms,ren_ms,draws\n";
-      header_written = true;
-    }
-    char row[192];
-    const int row_len = std::snprintf(
-        row, sizeof(row), "%.2f,%u,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f\n",
-        session_time_s, sec_frames, fps, min_fps, max_fps,
-        avg_ms, p95_ms, sec_max_ms, avg_gpu, avg_ren, avg_draws);
-    if (row_len > 0) {
-      const size_t n = std::min<size_t>(static_cast<size_t>(row_len), sizeof(row) - 1);
-      s_fps_csv_buf.append(row, n);
-      ++s_fps_csv_pending;
-    }
-    if (s_fps_csv_pending >= 10u) {
-#if defined(__SWITCH__)
-      const char* fps_path = "sdmc:/switch/timeshift/fps_log.csv";
-#else
-      const char* fps_path = "fps_log.csv";
-#endif
-      if (FILE* f = std::fopen(fps_path, s_fps_file_opened ? "a" : "w")) {
-        std::fwrite(s_fps_csv_buf.data(), 1, s_fps_csv_buf.size(), f);
-        std::fclose(f);
-        s_fps_file_opened = true;
-      }
-      s_fps_csv_buf.clear();
-      s_fps_csv_pending = 0;
-    }
-
-    REXLOG_INFO(
-        "[fps] t={:.1f}s: {:.1f} FPS (min {:.1f}, max {:.1f}) avg={:.1f}ms p95={:.1f}ms "
-        "max={:.1f}ms gpu={:.1f}ms ren={:.1f}ms draws={:.0f}",
-        session_time_s, fps, min_fps, max_fps, avg_ms, p95_ms, sec_max_ms, avg_gpu, avg_ren, avg_draws);
-
-    sec_ms = 0.0;
-    sec_min_ms = 1e9;
-    sec_max_ms = 0.0;
-    sec_gpu_ms = 0.0;
-    sec_ren_ms = 0.0;
-    sec_draws = 0;
-    sec_frames = 0;
-    sec_samples.clear();
-  }
+  (void)ren_ms;
 }
 
 }  // namespace
@@ -925,10 +838,8 @@ void OnGpuFrame(double ms) {
 void OnRenderThreadFrame(double busy_ms) {
   using Clock = std::chrono::steady_clock;
   static uint32_t s_total_frames = 0;
-  static uint32_t s_sample_count = 0;
   static bool s_has_prev = false;
   static Clock::time_point s_prev_tp{};
-  static timeshift::telemetry::PerfSample s_samples[timeshift::telemetry::kWindowFrames]{};
 
   const Clock::time_point now = Clock::now();
   const double frame_ms =
@@ -937,148 +848,16 @@ void OnRenderThreadFrame(double busy_ms) {
   s_prev_tp = now;
   s_has_prev = true;
 
-#if defined(__SWITCH__)
-  {
-    static uint64_t s_prev_ren_cpu_ticks = 0;
-    u64 now_cpu = 0;
-    Result rc = svcGetInfo(&now_cpu, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total);
-    if (R_FAILED(rc)) {
-      rc = svcGetInfo(&now_cpu, InfoType_ThreadTickCountDeprecated, CUR_THREAD_HANDLE, TickCountInfo_Total);
-    }
-    if (R_SUCCEEDED(rc)) {
-      if (s_prev_ren_cpu_ticks != 0u && now_cpu > s_prev_ren_cpu_ticks) {
-        timeshift::telemetry::g_role_cpu_ticks[3].fetch_add(now_cpu - s_prev_ren_cpu_ticks,
-                                                            std::memory_order_relaxed);
-      }
-      s_prev_ren_cpu_ticks = now_cpu;
-    }
-  }
-#endif
   const uint32_t frame_idx = s_total_frames++;
 #if defined(__SWITCH__)
   rex_watchdog_note_render(uint64_t(frame_idx) + 1u);
 #endif
-  if (frame_idx < timeshift::telemetry::kWarmupFrames) {
-    const double cur_gpu_ms =
-        double(timeshift::telemetry::g_frame_gpu_us.load(std::memory_order_relaxed)) / 1000.0;
-    const uint32_t cur_draws =
-        timeshift::telemetry::g_telemetry_frame_draws.load(std::memory_order_relaxed);
-    timeshift::telemetry::UpdateLiveFpsStats(frame_ms, busy_ms, cur_gpu_ms, cur_draws);
-    timeshift::telemetry::ResetPerFrameCounters();
-    if (frame_idx + 1 == timeshift::telemetry::kWarmupFrames) {
-      timeshift::telemetry::g_game_core_mask.store(0, std::memory_order_relaxed);
-      for (auto& c : timeshift::telemetry::g_role_cpu_ticks) {
-        c.store(0, std::memory_order_relaxed);
-      }
-      for (auto& c : timeshift::telemetry::g_handover_counts) {
-        c.store(0, std::memory_order_relaxed);
-      }
-    }
-    return;
-  }
-
-  timeshift::telemetry::PerfSample& dst = s_samples[s_sample_count++];
-  dst.frame_idx = frame_idx;
-  dst.frame_ms = frame_ms;
-  dst.render_busy_ms = busy_ms;
-  dst.gpu_ms =
+  const double cur_gpu_ms =
       double(timeshift::telemetry::g_frame_gpu_us.exchange(0, std::memory_order_relaxed)) / 1000.0;
-  dst.game_wait_ms =
-      double(timeshift::telemetry::g_frame_game_wait_us.exchange(0, std::memory_order_relaxed)) /
-      1000.0;
-  dst.draws =
+  const uint32_t cur_draws =
       timeshift::telemetry::g_telemetry_frame_draws.exchange(0, std::memory_order_relaxed);
-  dst.pipeline_binds =
-      timeshift::telemetry::g_frame_pipeline_binds.exchange(0, std::memory_order_relaxed);
-  dst.cmd_submits =
-      1u + timeshift::telemetry::g_frame_kicks.exchange(0, std::memory_order_relaxed);
-  dst.upload_bytes =
-      timeshift::telemetry::g_frame_upload_bytes.exchange(0, std::memory_order_relaxed);
-  dst.resolves_drawn =
-      timeshift::telemetry::g_frame_resolves_drawn.exchange(0, std::memory_order_relaxed);
-  dst.resolves_skipped =
-      timeshift::telemetry::g_frame_resolves_skipped.exchange(0, std::memory_order_relaxed);
-  dst.depth_only =
-      timeshift::telemetry::g_frame_depth_only.exchange(0, std::memory_order_relaxed);
-  dst.draw_adp_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_draw_adapter.exchange(0, std::memory_order_relaxed));
-  dst.orig_d3d_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_orig_d3d.exchange(0, std::memory_order_relaxed));
-  dst.fence_wait_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_fence_wait.exchange(0, std::memory_order_relaxed));
-  dst.fence_wait_cnt =
-      timeshift::telemetry::g_count_fence_wait.exchange(0, std::memory_order_relaxed);
-  dst.fence_qry_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_fence_query.exchange(0, std::memory_order_relaxed));
-  dst.fence_qry_cnt =
-      timeshift::telemetry::g_count_fence_query.exchange(0, std::memory_order_relaxed);
-  dst.tiling_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_tiling.exchange(0, std::memory_order_relaxed));
-  dst.tiling_cnt =
-      timeshift::telemetry::g_count_tiling.exchange(0, std::memory_order_relaxed);
-  dst.swap_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_swap.exchange(0, std::memory_order_relaxed));
-  dst.game_frame_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ticks_game_frame.exchange(0, std::memory_order_relaxed));
-  dst.ren_dev_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_dev.exchange(0, std::memory_order_relaxed));
-  dst.ren_tex_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_tex.exchange(0, std::memory_order_relaxed));
-  dst.ren_geo_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_geo.exchange(0, std::memory_order_relaxed));
-  dst.ren_const_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_const.exchange(0, std::memory_order_relaxed));
-  dst.ren_pipe_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_pipe.exchange(0, std::memory_order_relaxed));
-  dst.ren_res_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_res.exchange(0, std::memory_order_relaxed));
-  dst.ren_pres_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_ren_ticks_pres.exchange(0, std::memory_order_relaxed));
-  dst.tex_memo_hits =
-      timeshift::telemetry::g_tex_memo_hits.exchange(0, std::memory_order_relaxed);
-  dst.tex_bind_calls =
-      timeshift::telemetry::g_tex_bind_calls.exchange(0, std::memory_order_relaxed);
-  dst.tex_create_cnt =
-      timeshift::telemetry::g_tex_create_cnt.exchange(0, std::memory_order_relaxed);
-  dst.tex_upload_cnt =
-      timeshift::telemetry::g_tex_upload_cnt.exchange(0, std::memory_order_relaxed);
-  dst.tex_upload_bytes =
-      timeshift::telemetry::g_tex_upload_bytes.exchange(0, std::memory_order_relaxed);
-  dst.tex_sample_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_sample.exchange(0, std::memory_order_relaxed));
-  dst.tex_linear_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_linear.exchange(0, std::memory_order_relaxed));
-  dst.tex_upload_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_upload.exchange(0, std::memory_order_relaxed));
-  dst.tex_create_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_create.exchange(0, std::memory_order_relaxed));
-  dst.tex_handover_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_handover.exchange(0, std::memory_order_relaxed));
-  dst.tex_sampler_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_tex_ticks_sampler.exchange(0, std::memory_order_relaxed));
-  dst.orig_didx_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_orig_ticks_didx.exchange(0, std::memory_order_relaxed));
-  dst.orig_didx_cnt =
-      timeshift::telemetry::g_orig_cnt_didx.exchange(0, std::memory_order_relaxed);
-  dst.orig_up_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_orig_ticks_up.exchange(0, std::memory_order_relaxed));
-  dst.orig_up_cnt =
-      timeshift::telemetry::g_orig_cnt_up.exchange(0, std::memory_order_relaxed);
-  dst.orig_clr_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_orig_ticks_clr.exchange(0, std::memory_order_relaxed));
-  dst.orig_clr_cnt =
-      timeshift::telemetry::g_orig_cnt_clr.exchange(0, std::memory_order_relaxed);
-  dst.orig_res_ms = timeshift::telemetry::TicksToMs(
-      timeshift::telemetry::g_orig_ticks_res.exchange(0, std::memory_order_relaxed));
-  dst.orig_res_cnt =
-      timeshift::telemetry::g_orig_cnt_res.exchange(0, std::memory_order_relaxed);
-
-  timeshift::telemetry::UpdateLiveFpsStats(dst.frame_ms, dst.render_busy_ms, dst.gpu_ms, dst.draws);
-
-  if (s_sample_count == timeshift::telemetry::kWindowFrames) {
-    timeshift::telemetry::FlushPerfWindowCsv(s_samples, timeshift::telemetry::kWindowFrames);
-    s_sample_count = 0;
-  }
+  timeshift::telemetry::UpdateLiveFpsStats(frame_ms, busy_ms, cur_gpu_ms, cur_draws);
+  timeshift::telemetry::ResetPerFrameCounters();
 }
 void OnGameThreadWait(double ms) {
   const uint64_t us = ms > 0.0 ? static_cast<uint64_t>(ms * 1000.0) : 0ULL;
@@ -1125,8 +904,6 @@ void __wrap_sub_821EFB10(PPCContext& ctx, uint8_t* base) {
         __builtin_bswap16(*reinterpret_cast<const uint16_t*>(base + ctx.r6.u32 + 2));
     char* lvl = reinterpret_cast<char*>(base + ctx.r6.u32 + 4);
     char* sub = reinterpret_cast<char*>(base + ctx.r6.u32 + 264);
-    REXLOG_INFO("[level-hook] GS_MSG_LOAD_LEVEL(1004) sz={} lvl='{}' sub='{}'",
-                msg_sz, lvl, (msg_sz >= 328) ? sub : "");
     const std::string force = REXCVAR_GET(renut_force_level);
     const bool is_menu = (std::strcmp(lvl, "menu") == 0 || std::strcmp(lvl, "menu.lg") == 0);
     if (!force.empty() && !is_menu && lvl[0] != '\0') {
@@ -1136,7 +913,6 @@ void __wrap_sub_821EFB10(PPCContext& ctx, uint8_t* base) {
           (target.size() < 3 || target.compare(target.size() - 3, 3, ".lg") != 0)) {
         target += ".lg";
       }
-      REXLOG_INFO("[level-hook] Overriding level '{}' -> '{}' (sz={})", lvl, target, msg_sz);
       const size_t n = std::min<size_t>(target.size(), 255);
       std::memcpy(lvl, target.data(), n);
       lvl[n] = '\0';
@@ -1150,18 +926,6 @@ void __wrap_sub_821EFB10(PPCContext& ctx, uint8_t* base) {
 
 void __real_sub_822720D8(PPCContext& ctx, uint8_t* base);
 void __wrap_sub_822720D8(PPCContext& ctx, uint8_t* base) {
-  const uint32_t r3 = ctx.r3.u32;
-  const uint32_t r4 = ctx.r4.u32;
-  const uint32_t r5 = ctx.r5.u32;
-  char name[64]{};
-  if (r4 >= 0x10000u && r4 < 0xF0000000u) {
-    for (size_t i = 0; i + 1 < sizeof(name); ++i) {
-      const unsigned char ch = base[r4 + i];
-      if (!ch) break;
-      name[i] = (ch >= 32 && ch < 127) ? char(ch) : '.';
-    }
-  }
-  REXLOG_INFO("[level-hook] sub_822720D8 r3=0x{:08X} r4=0x{:08X}('{}') r5=0x{:X}", r3, r4, name, r5);
   __real_sub_822720D8(ctx, base);
 }
 
@@ -1207,12 +971,6 @@ void __wrap_sub_82281840(PPCContext& ctx, uint8_t* base) {
 void __real___imp__XamInputGetState(PPCContext& ctx, uint8_t* base);
 
 void __wrap___imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
-#if defined(__SWITCH__)
-  static thread_local uint32_t s_sim_input_probe = 0;
-  if (timeshift::telemetry::t_thread_role == 0 && (++s_sim_input_probe & 3u) == 0u) {
-    timeshift::telemetry::AccountThreadCpuTicks(0);
-  }
-#endif
   const uint32_t user_index = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
   const uint32_t state_va = ctx.r5.u32;

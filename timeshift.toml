@@ -1,13 +1,24 @@
 # TimeShift ReXGlue Switch Configuration
-log_level = "info"
+log_level = "error"
 switch_nintendo_layout = true
 audio_maxqframes = 18
 vulkan_async_skip_incomplete_frames = false
 async_shader_compilation = true
 renut_vsync = false
 
-renut_resolution = "720p"
-renut_anisotropic_filtering = "2x"
+renut_resolution = "Auto"
+renut_fps_cap = "30"
+renut_fxaa = true
+renut_fsr = "Med"
+renut_anisotropic_filtering = "4x"
+renut_skip_shadows = false
+renut_far_plane_m = 0
+renut_skip_orig_d3d = true
+renut_deko3d_zcull = true
+renut_deko3d_depth_compression = false
+renut_audio_reverb = false
+renut_fps_overlay = false
+
 sa2_renut_snapshot_deltas = true
 sa2_renut_chain_reuse = true
 sa2_renut_colour_handover = true
@@ -15,9 +26,3 @@ sa2_renut_clear_repeat = false
 sa2_renut_gamma_ramp = true
 renut_gpu_profile = 0.0
 banjo_renut_diag_gpu_shaders = false
-renut_fps_overlay = true
-renut_deko3d_zcull = true
-renut_deko3d_depth_compression = false
-renut_skip_orig_d3d = true
-renut_skip_shadows = false
-renut_far_plane_m = 0

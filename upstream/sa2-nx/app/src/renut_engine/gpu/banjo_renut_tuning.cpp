@@ -434,7 +434,7 @@ REXCVAR_DEFINE_BOOL(banjo_renut_memory_policy, kMemoryPolicyDefault, "Banjo",
                     "banjo_renut_stream_cache_mb and emptied of copies idle banjo_renut_stream_cache_idle_s, upload ring "
                     "chunks of a heavy frame released after banjo_renut_upload_trim_frames. The same picture: a released "
                     "texture or copy is made again from guest memory. Not under a master switch");
-REXCVAR_DEFINE_INT32(banjo_renut_textures_reserve_mb, 192, "Banjo",
+REXCVAR_DEFINE_INT32(banjo_renut_textures_reserve_mb, 512, "Banjo",
                      "banjo_renut_memory_policy: with less than this much of the GPU memory budget left, or the "
                      "bindless table three quarters full (checked every 32 frames), the host textures not bound for "
                      "120 frames are released (made again from guest memory when bound). Never a resolve destination "

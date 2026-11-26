@@ -84,7 +84,7 @@ REXCVAR_DEFINE_BOOL(sa2_renut_setter_marks, true, "SA2/Renderer",
                     "marked since the previous one (gpu/sa2_setter_marks.h: by the Direct3D setters that store without "
                     "a dirty tag, by the dirty tags pending, and the vertex declaration's) instead of all 40. Off: all")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(sa2_renut_setter_marks_check, true, "SA2/Renderer",
+REXCVAR_DEFINE_BOOL(sa2_renut_setter_marks_check, false, "SA2/Renderer",
                     "Renut's renderer (sa2_renut_setter_marks): every 32nd draw of the chain (every draw with "
                     "sa2_renut_snapshot_deltas_verify) compares all 40 chunks, and a changed chunk no mark named turns "
                     "the marks off for the session (logged). Off: no check")

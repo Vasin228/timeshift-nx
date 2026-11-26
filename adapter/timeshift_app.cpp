@@ -23,6 +23,7 @@
 namespace rex {
 REXCVAR_DECLARE(std::string, gpu_backend);
 }
+REXCVAR_DECLARE(std::string, log_level);
 
 // Failing ICD entry points when NVK is not linked (PLUME_SWITCH_NO_NVK)
 extern "C" {
@@ -141,6 +142,7 @@ void InstallCustomIntroVideo() {
     const size_t written = std::fwrite(g_customSierraIntroStart, 1, total, out);
     std::fclose(out);
     if (written == total) {
+      fs::remove(dst, ec);
       fs::rename(tmp, dst, ec);
     } else {
       fs::remove(tmp, ec);
@@ -149,6 +151,12 @@ void InstallCustomIntroVideo() {
 }
 #endif
 
+void ApplyConfiguredLogLevel() {
+  if (auto lvl = rex::ParseLogLevel(REXCVAR_GET(log_level))) {
+    rex::SetAllLevels(*lvl);
+  }
+  rex::RegisterLogLevelCallback();
+}
 }  // namespace
 
 namespace timeshift::app {
@@ -202,6 +210,7 @@ class TimeshiftRenutApp : public rex::ReXApp {
 
   protected:
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    ApplyConfiguredLogLevel();
     if (IsRenutBackendSelected()) {
       renut::gpu::ConfigureRuntime(config);
       timeshift::renderer::SetCoordinatedBackendActive(true);
@@ -224,6 +233,7 @@ class TimeshiftRenutApp : public rex::ReXApp {
       }
       REXLOG_INFO("[gpu] ReNut Video / renderer initialized successfully; presentation queue ready");
     }
+    ApplyConfiguredLogLevel();
     return rex::ReXApp::OnFinalizePaths(defaults, std::move(resume));
   }
 

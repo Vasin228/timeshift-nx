@@ -6347,7 +6347,7 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                          if (dfetch.IsTexture()) {
                            u32 dw = 0, dh = 0, dd = 0;
                            dfetch.Size(dw, dh, dd);
-                           if (((dw * 2 == surface->width && dh * 2 == surface->height) ||
+                           if (((dw > 0 && dh > 0 && dw * 2 <= surface->width && dh * 2 <= surface->height) ||
                                 (dw <= 1 && dh <= 1)) &&
                                dw <= s.Size(surface->width) && dh <= s.Size(surface->height))
                              s = {};

@@ -172,3 +172,22 @@ Earlier entries: [Parts 266–285](MODLOG_ARCHIVE_266_285.md).
   - Disabled Stage 8 `renut_guest_profiler` (`false` in `adapter/presentation_hooks.cpp`), stripped debug probes (`[480t]`/`[480p-pix]`, `RGPU_INFO("FSR 1 EASU...")`), synced `timeshift-nx` <-> `timeshift-renut` (`16/16` files SHA-identical), passed `audit_private_trees.py` & `check_profile.py`.
 - **Clean Candidate Build (`timeshift.nro`)**:
   - `timeshift.elf` (`1,220,767,880` B, `SHA256=F4933CF3F93B87F19A89B6EE045B08BD01BB1A59D2904E90635BACC412341EC5`), `timeshift.nro` (`152,453,117` B, `SHA256=06243BE70640881FB2DBC136C608A41ED2BE3984CC0DC28BB8705E232CCC86E7`, `220` objs, `26/26` hooks, `0` foreign hooks, embedded `deko3d_glsl.bin`).
+
+## 2026-11-26 (Part 294) — Telemetry Cleanup, Full `deko3d_shaders.bin` Cache Fix & Clean Switch Sync
+- **Telemetry & Log Cleanup (Zero Telemetry CSVs / Hot-Path Probes / Startup Logs)**:
+  - Fixed shader cache filename/keying on Switch: `Deko3DUamFlags() == 1471u` reads `deko3d_shaders.bin` (not `deko3d_shaders_f0.bin`); built complete `37,516`-record `D:\Anti\deko3d_shaders.bin` (`208,306,856` B, `SHA256=421A642026E4647916CF9E32880C1E43E198BD351BA59D139BF3B64EAEB74D7B`) compiling all `13,189` missing variants (`0` failures).
+  - Stripped telemetry CSV writers & probes (`perf_baseline.csv`, `fps_log.csv`, `FlushPerfWindowCsv`, `svcGetInfo` ticks in `OnRenderThreadFrame`, `s_sim_input_probe`, `[level-hook]` `REXLOG_INFO` in `adapter/renut_tuning_shims.cpp`; `s_sim_alloc_probe`, `s_sim_cs_probe`, `CheckAndReportDrops` in `adapter/presentation_hooks.cpp`).
+  - Disabled setter-marks consistency check by default (`sa2_renut_setter_marks_check = false` in `queued.cpp`), gated `deko3d.log` creation on `Latch().diag_gpu_shaders` (`banjo_renut_deko3d.cpp` + `LatchTuning()`), and raised texture cache reserve from `320 MB`/`192 MB` to `512 MB` (`TextureReserveBytes()` + `banjo_renut_textures_reserve_mb`).
+  - Updated default `timeshift.toml` (`log_level = "error"`, `renut_fps_overlay = false`, `renut_resolution = "Auto"`, `renut_fsr = "Med"`, `renut_fps_cap = "30"`, `renut_deko3d_depth_compression = true`).
+- **Build, Audits & Switch Test Deploy**:
+  - `timeshift.nro`: `2026-11-26 04:40:02`, `152,408,061` B (`SHA256=63D05BBC54889A4E59DBC034CC31A2661ECD8A09650A8378AFBE9D5A103FEF62`); `timeshift.elf`: `1,220,256,784` B (`SHA256=23BC22440826929ED1C250986C576DB42A1afa4418711ab607699d735ae5ce8f`); `audit_private_trees.py` PASS, `check_profile.py` PASS.
+  - Wiped stale test state on Switch `/switch/timeshift/` (`user/`, `cache/`, `557` files in `shader_capture/`, old `.log`/`.csv`/`.bin`) and deployed `timeshift.nro`, `timeshift.toml`, and `deko3d_shaders.bin` (`HTTP:201`, remote SHA-256 verified).
+
+## 2026-11-26 (Part 295) — DOF Depth-Compression Bug Fix, Custom Intro Restore & Real `log_level` Enforcement
+- **Root Causes Diagnosed & Fixed**:
+  - **Fullscreen DOF blur bug (`ts2_city_part02`)**: `renut_deko3d_depth_compression = true` caused GM20B samplers to read compressed depth as `1.0`, forcing fullscreen DOF defocus (except uncompressed foreground tiles) per Parts 227–239; reverted `renut_deko3d_depth_compression = false` in `timeshift.toml`. Also aligned `ResolveStateLocked` in `draw.cpp` (`dw * 2 <= surface->width && dh * 2 <= surface->height`) with `ComputeViewportSlow` for all `<= 1/2`-res depthless subpasses at `540p`.
+  - **Custom intro (`sierra_logo.bik`)**: `InstallCustomIntroVideo()` (`adapter/timeshift_app.cpp`) left `15,124,728` B custom intro in `sierra_logo.bik.tmp` because Horizon FAT32 `fs::rename` failed over existing file; added `fs::remove(dst, ec)` before `fs::rename`.
+  - **`log_level = "error"` ignored on Switch**: `rex_app_switch.cpp` only called `InitLoggingEarly()`, leaving categories at `info`; added `ApplyConfiguredLogLevel()` (`rex::SetAllLevels` + `rex::RegisterLogLevelCallback`) in `OnPreSetup()` and `OnFinalizePaths()`.
+- **Clean Rebuild & Switch Verification (`192.168.0.7:4150`)**:
+  - `timeshift.nro`: `2026-11-26 05:27:14`, `152,412,157` B (`SHA256=965984E37251617497026B4F206F54C652DD6EE45224C610852FF86D75BAE2BF`); `timeshift.elf`: `1,220,261,960` B (`SHA256=2A43E627ABAC30525FAA168E8D9E637C7E903201E8EACC88C5714A71099D3F25`); `audit_private_trees.py` PASS, `check_profile.py` PASS.
+  - Cleaned Switch `user/`, `cache/`, `timeshift.log`, `freeze_dump.txt`, `pipeline_list.bin`, `sierra_logo.bik.tmp`; uploaded `timeshift.toml` and `timeshift.nro` (`HTTP:201`, remote SHA-256 verified).
